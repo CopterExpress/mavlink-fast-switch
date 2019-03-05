@@ -43,7 +43,38 @@ void signal_handler(int signum)
   stop_application = true;
 }
 
+typedef enum
+{
+  FT_DROP = 0,
+  FT_ACCEPT
+} filter_type_t, *p_filter_type_t;
 
+#define FILTER_MAX_LEN  (20 + 1)
+#define FILTER_TERMINATION  UINT32_MAX
+
+static int filter_len(uint32_t *filter)
+{
+  int i = 0;
+  while(filter[i] != FILTER_TERMINATION)
+    i++;
+
+  return i;
+}
+
+static int filter_id(uint32_t *filter, uint32_t id)
+{
+  int i = 0;
+  
+  while (filter[i] != FILTER_TERMINATION)
+  {
+    if (filter[i] == id)
+      return i;
+
+    i++;
+  }
+
+  return -1;
+}
 
 typedef struct
 {
@@ -65,7 +96,8 @@ typedef struct
   bool broadcast;
   // The remote target address
   struct sockaddr_in remote_address;
-  
+  filter_type_t filter_type;
+  uint32_t filter[FILTER_MAX_LEN];
 } endpoint_t, *p_endpoint_t;
 
 // Config file path command line argument option value buffer size
@@ -86,11 +118,13 @@ static char log_level[LOG_LEVEL_ARGUMENT_BUF_SIZE] = {
 
 static int ep_open_udp(p_endpoint_t endpoint, const char *local_ip, const uint16_t local_port,
                                    const char *remote_ip, const uint16_t remote_port, const float sleep_interval,
-                                   const float sleep_heartbeat_interval)
+                                   const float sleep_heartbeat_interval, filter_type_t filter_type, 
+                                   uint32_t *filter)
 {
-  syslog(LOG_INFO, "Opening MAVLink UDP endpoint: local %s:%u, remote %s:%u, sleep %f, sleep heartbeat %f",
+  syslog(LOG_INFO,
+    "Opening MAVLink UDP endpoint: local %s:%u, remote %s:%u, sleep %f, sleep heartbeat %f, filter %s, filter size %i",
     (local_ip) ? local_ip : "ANY", local_port, (remote_ip) ? remote_ip : "UNKNOWN", remote_port, sleep_interval,
-    sleep_heartbeat_interval);
+    sleep_heartbeat_interval, (filter_type == FT_DROP) ? "DROP" : "ACCEPT", (filter) ? filter_len(filter) : 0);
 
   // Create UDP socket
   endpoint->fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -157,6 +191,28 @@ static int ep_open_udp(p_endpoint_t endpoint, const char *local_ip, const uint16
 
   endpoint->sleep_heartbeat_interval = sleep_heartbeat_interval;
   endpoint->first_heartbeat = true;
+
+  endpoint->filter_type = filter_type;
+
+  if (filter)
+  {
+    int i;
+
+    while(filter[i] != FILTER_TERMINATION)
+    {
+      if (i >= FILTER_MAX_LEN)
+        return -1;
+
+      endpoint->filter[i] = filter[i];
+
+      i++;
+    };
+
+    endpoint->filter[i] = FILTER_TERMINATION;
+  }
+  else
+    endpoint->filter[0] = FILTER_TERMINATION;
+  
 
   // Reset a remote address for the endpoint
   memset(&endpoint->remote_address, 0, sizeof(endpoint->remote_address));
@@ -226,18 +282,6 @@ static int ep_stamp(p_endpoint_t endpoint)
   return 0;
 }
 
-static int ep_stamp_heartbeat(p_endpoint_t endpoint)
-{
-  if (clock_gettime(CLOCK_MONOTONIC, &endpoint->last_heartbeat) < 0)
-  {
-    syslog(LOG_ERR, "Failed to get clock value: \"%s\"", strerror(errno));
-    
-    return -1;
-  }
-
-  return 0;
-}
-
 static inline float timespec2float(struct timespec *time)
 {
   return time->tv_sec + time->tv_nsec / 1000000000.0;
@@ -269,7 +313,8 @@ typedef enum
 } ec_create_endpoint_value_t;
 
 static int ec_open_endpoint(p_endpoints_collection_t collection, const char *local_ip, const uint16_t local_port,
-  const char *remote_ip, const uint16_t remote_port, float sleep_interval, const float sleep_heartbeat_interval)
+  const char *remote_ip, const uint16_t remote_port, float sleep_interval, const float sleep_heartbeat_interval,
+  filter_type_t filter_type, uint32_t *filter)
 {
   int i;
 
@@ -288,7 +333,7 @@ static int ec_open_endpoint(p_endpoints_collection_t collection, const char *loc
   syslog(LOG_DEBUG, "Found free memory block: %i", i);
 
   int handle = ep_open_udp(&collection->endpoints[i], local_ip, local_port, remote_ip, remote_port, sleep_interval,
-    sleep_heartbeat_interval);
+    sleep_heartbeat_interval, filter_type, filter);
 
   // Error opening a new endpoint
   if (handle < 0)
@@ -329,21 +374,6 @@ static int ec_stamp_all(p_endpoints_collection_t collection)
     if (collection->used_set[i])
     {
       if (ep_stamp(&collection->endpoints[i]) < 0)
-        return -1;
-    }
-
-  return 0;
-}
-
-static int ec_heartbeat_stamp_all(p_endpoints_collection_t collection)
-{
-  int i;
-
-  // Stamp monotonic clock value for endpoints in the used memory blocks
-  for (i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
-    if (collection->used_set[i])
-    {
-      if (ep_stamp_heartbeat(&collection->endpoints[i]) < 0)
         return -1;
     }
 
@@ -459,6 +489,14 @@ static int ec_sendto(p_endpoints_collection_t collection, const int sender_handl
         collection->endpoints[i].first_heartbeat = false;
       }
 
+      static int msgid_index;
+
+      msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
+
+      if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
+          ((collection->endpoints[i].filter_type == FT_DROP) && (msgid_index >= 0)))
+        continue;
+
       // Send the data to the remote address
       if (sendto(collection->endpoints[i].fd, message_buf, message_length, 0,
         (struct sockaddr *)&collection->endpoints[i].remote_address, sizeof(struct sockaddr_in)) < 0)
@@ -568,7 +606,7 @@ int main(int argc, char **argv)
   // Init the collection
   ec_init(&collection);
 
-  if (ec_open_endpoint(&collection, "127.0.0.1", 14588, NULL, 0, 3.0, 1.0) < 0)
+  if (ec_open_endpoint(&collection, "127.0.0.1", 14588, NULL, 0, 3.0, 1.0, FT_DROP, NULL) < 0)
   {
     syslog(LOG_ERR, "Failed to create endpoint 1!");
 
@@ -577,7 +615,9 @@ int main(int argc, char **argv)
     return ENDPOINT_FAILED;
   }
 
-  if (ec_open_endpoint(&collection, "127.0.0.1", 14589, NULL, 0, 3.0, 1.0) < 0)
+  uint32_t endpoint2_filters[] = { MAVLINK_MSG_ID_SYS_STATUS, FILTER_TERMINATION };
+
+  if (ec_open_endpoint(&collection, "127.0.0.1", 14589, NULL, 0, 3.0, 1.0, FT_DROP, endpoint2_filters) < 0)
   {
     syslog(LOG_ERR, "Failed to create endpoint 2!");
 
