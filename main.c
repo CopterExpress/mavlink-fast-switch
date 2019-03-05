@@ -43,20 +43,29 @@ void signal_handler(int signum)
   stop_application = true;
 }
 
+
+
 typedef struct
 {
   // UDP socket file descriptor
   int fd;
-  // Endpoint sleep interval (<0 - no sleep mode)
+  // Endpoint sleep interval (-1 - no sleep mode)
   float sleep_interval;
   // Sleep mode flag
   bool sleep_mode;
-  // The last ativity timestamp
+  // The last activity timestamp
   struct timespec last_activity;
+  // The last heartbeat timestamp
+  struct timespec last_heartbeat;
+  // Heartbeat minimal interval (-1 - no minimal interval)
+  float sleep_heartbeat_interval;
+  // Firt heartbeat flag
+  bool first_heartbeat;
   // Broadcast enabled flag
   bool broadcast;
   // The remote target address
   struct sockaddr_in remote_address;
+  
 } endpoint_t, *p_endpoint_t;
 
 // Config file path command line argument option value buffer size
@@ -76,10 +85,12 @@ static char log_level[LOG_LEVEL_ARGUMENT_BUF_SIZE] = {
 };
 
 static int ep_open_udp(p_endpoint_t endpoint, const char *local_ip, const uint16_t local_port,
-                                   const char *remote_ip, const uint16_t remote_port, float sleep_interval)
+                                   const char *remote_ip, const uint16_t remote_port, const float sleep_interval,
+                                   const float sleep_heartbeat_interval)
 {
-  syslog(LOG_INFO, "Opening MAVLink UDP endpoint: local %s:%u, remote %s:%u, sleep %f", (local_ip) ? local_ip : "ANY",
-    local_port, (remote_ip) ? remote_ip : "UNKNOWN", remote_port, sleep_interval);
+  syslog(LOG_INFO, "Opening MAVLink UDP endpoint: local %s:%u, remote %s:%u, sleep %f, sleep heartbeat %f",
+    (local_ip) ? local_ip : "ANY", local_port, (remote_ip) ? remote_ip : "UNKNOWN", remote_port, sleep_interval,
+    sleep_heartbeat_interval);
 
   // Create UDP socket
   endpoint->fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -142,7 +153,10 @@ static int ep_open_udp(p_endpoint_t endpoint, const char *local_ip, const uint16
   }
 
   endpoint->sleep_interval = sleep_interval;
-  endpoint->sleep_mode = false;
+  endpoint->sleep_mode = sleep_interval > 0;
+
+  endpoint->sleep_heartbeat_interval = sleep_heartbeat_interval;
+  endpoint->first_heartbeat = true;
 
   // Reset a remote address for the endpoint
   memset(&endpoint->remote_address, 0, sizeof(endpoint->remote_address));
@@ -204,7 +218,19 @@ static int ep_stamp(p_endpoint_t endpoint)
 {
   if (clock_gettime(CLOCK_MONOTONIC, &endpoint->last_activity) < 0)
   {
-    syslog(LOG_ERR, "Failed to get initial clock value: \"%s\"", strerror(errno));
+    syslog(LOG_ERR, "Failed to get clock value: \"%s\"", strerror(errno));
+    
+    return -1;
+  }
+
+  return 0;
+}
+
+static int ep_stamp_heartbeat(p_endpoint_t endpoint)
+{
+  if (clock_gettime(CLOCK_MONOTONIC, &endpoint->last_heartbeat) < 0)
+  {
+    syslog(LOG_ERR, "Failed to get clock value: \"%s\"", strerror(errno));
     
     return -1;
   }
@@ -243,7 +269,7 @@ typedef enum
 } ec_create_endpoint_value_t;
 
 static int ec_open_endpoint(p_endpoints_collection_t collection, const char *local_ip, const uint16_t local_port,
-  const char *remote_ip, const uint16_t remote_port, float sleep_interval)
+  const char *remote_ip, const uint16_t remote_port, float sleep_interval, const float sleep_heartbeat_interval)
 {
   int i;
 
@@ -261,7 +287,8 @@ static int ec_open_endpoint(p_endpoints_collection_t collection, const char *loc
 
   syslog(LOG_DEBUG, "Found free memory block: %i", i);
 
-  int handle = ep_open_udp(&collection->endpoints[i], local_ip, local_port, remote_ip, remote_port, sleep_interval);
+  int handle = ep_open_udp(&collection->endpoints[i], local_ip, local_port, remote_ip, remote_port, sleep_interval,
+    sleep_heartbeat_interval);
 
   // Error opening a new endpoint
   if (handle < 0)
@@ -302,6 +329,21 @@ static int ec_stamp_all(p_endpoints_collection_t collection)
     if (collection->used_set[i])
     {
       if (ep_stamp(&collection->endpoints[i]) < 0)
+        return -1;
+    }
+
+  return 0;
+}
+
+static int ec_heartbeat_stamp_all(p_endpoints_collection_t collection)
+{
+  int i;
+
+  // Stamp monotonic clock value for endpoints in the used memory blocks
+  for (i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+    if (collection->used_set[i])
+    {
+      if (ep_stamp_heartbeat(&collection->endpoints[i]) < 0)
         return -1;
     }
 
@@ -382,17 +424,39 @@ static int ec_sendto(p_endpoints_collection_t collection, const int sender_handl
         return -3;
       }
 
-      if ((collection->endpoints[i].sleep_interval > 0) &&
-        (timespec_passed(&current_time, &collection->endpoints[i].last_activity) > collection->endpoints[i].sleep_interval))
+      if (collection->endpoints[i].sleep_interval > 0)
       {
-        if (!collection->endpoints[i].sleep_mode)
+        if ((!collection->endpoints[i].sleep_mode) &&
+          (timespec_passed(&current_time, &collection->endpoints[i].last_activity) > collection->endpoints[i].sleep_interval))
         {
           syslog(LOG_INFO, "Endpoint %i is now sleeping", i);
 
           collection->endpoints[i].sleep_mode = true;
         }
 
-        continue;
+        if (collection->endpoints[i].sleep_mode)
+        {
+          if (message->msgid == MAVLINK_MSG_ID_HEARTBEAT)
+          {
+            if ((collection->endpoints[i].sleep_heartbeat_interval > 0) && (!collection->endpoints[i].first_heartbeat)
+              && (timespec_passed(&current_time, &collection->endpoints[i].last_heartbeat) <=
+              collection->endpoints[i].sleep_heartbeat_interval))
+            {
+              syslog(LOG_DEBUG, "Endpoint %i HEARTBEAT drop due to sleep heartbeat interval", i);
+
+              continue;
+            }
+          }
+          else
+            continue;
+        }
+      }
+
+      if (message->msgid == MAVLINK_MSG_ID_HEARTBEAT)
+      {
+        collection->endpoints[i].last_heartbeat = current_time;
+
+        collection->endpoints[i].first_heartbeat = false;
       }
 
       // Send the data to the remote address
@@ -504,7 +568,7 @@ int main(int argc, char **argv)
   // Init the collection
   ec_init(&collection);
 
-  if (ec_open_endpoint(&collection, "127.0.0.1", 14588, NULL, 0, 3.0) < 0)
+  if (ec_open_endpoint(&collection, "127.0.0.1", 14588, NULL, 0, 3.0, 1.0) < 0)
   {
     syslog(LOG_ERR, "Failed to create endpoint 1!");
 
@@ -513,7 +577,7 @@ int main(int argc, char **argv)
     return ENDPOINT_FAILED;
   }
 
-  if (ec_open_endpoint(&collection, "127.0.0.1", 14589, NULL, 0, 3.0) < 0)
+  if (ec_open_endpoint(&collection, "127.0.0.1", 14589, NULL, 0, 3.0, 1.0) < 0)
   {
     syslog(LOG_ERR, "Failed to create endpoint 2!");
 
@@ -572,16 +636,6 @@ int main(int argc, char **argv)
   socklen_t addr_len;
 
   int send_all_result;
-
-  if (ec_stamp_all(&collection) < 0)
-  {
-    syslog(LOG_CRIT, "Failed to stamp initial monotonic clock values to endpoints!");
-
-    ec_close_all(&collection);
-    closelog ();
-
-    return 10;
-  }
 
   while (!stop_application)
   {
