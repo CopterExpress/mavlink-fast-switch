@@ -6,8 +6,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 
-// WARNING: Make sure the correct dialect is included
-#include "libs/mavlink/v2.0/ardupilotmega/mavlink.h"
+#include "mavlink_dialect.h"
 
 typedef enum filter_type
 {

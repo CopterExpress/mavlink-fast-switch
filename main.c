@@ -11,8 +11,7 @@
 #include <sys/select.h>
 #include <assert.h>
 
-// WARNING: Make sure the correct dialect is included
-#include "libs/mavlink/v2.0/ardupilotmega/mavlink.h"
+#include "mavlink_dialect.h"
 
 #include "endpoint.h"
 #include "config.h"

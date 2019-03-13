@@ -8,8 +8,7 @@
 #include <cyaml/cyaml.h>
 
 // WARNING: Make sure the correct dialect is included
-#include "libs/mavlink/v2.0/ardupilotmega/mavlink.h"
-#include "libs/mavlink/v2.0/mavlink_get_info.h"
+#include "mavlink_dialect.h"
 
 #include "config.h"
 
