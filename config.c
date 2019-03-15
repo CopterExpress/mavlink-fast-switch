@@ -455,7 +455,6 @@ int config_load(const p_endpoints_collection_t collection, const char *config_fi
 
             // Buffer has extra space for a multiport endpoint postfix (@<local_port>)
             char multiport_name[CSC_ENDPOINT_NAME_MAX + 1];
-            int result;
 
             // For every port in the multiport endpoint port interval
             for (uint16_t local_port = app_config->endpoints[endpoint_index].local->ports->start;

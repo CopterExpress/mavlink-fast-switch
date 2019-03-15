@@ -68,8 +68,8 @@ typedef struct
   struct timespec last_activity;
   // The last heartbeat timestamp
   struct timespec last_heartbeat;
-  // Broadcast enabled flag
-  bool broadcast;
+  // Fix remote address (for broadcast and output endpoints)
+  bool fix_remote;
   // The remote target address
   struct sockaddr_in remote_address;
   // Filter type

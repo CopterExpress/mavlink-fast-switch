@@ -161,6 +161,8 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
 
     // Convert port to the network byte order
     endpoint->remote_address.sin_port = htons(remote_port);
+
+    endpoint->fix_remote = true;
   }
   else
     endpoint->remote_address.sin_addr.s_addr = INADDR_NONE;  // No remote IP address presented
@@ -169,8 +171,6 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   if (IN_MULTICAST(ntohl(endpoint->remote_address.sin_addr.s_addr)))
   {
     syslog(LOG_INFO, "Remote address %s is a multicast address", remote_ip);
-
-    endpoint->broadcast = true;
 
     // Const true value for a SO_BROADCAST option
     int so_broadcast = true;
@@ -433,7 +433,7 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
     // If the memory block is used check if it is the source of the data
     if (collection->used_set[endpoint_index] && FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
     {
-      if (collection->endpoints[endpoint_index].broadcast)
+      if (collection->endpoints[endpoint_index].fix_remote)
         // Read the data from the broadcast endpoint (no sender address is needed)
         data_read = read(collection->endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf));
       else  // We need to retrieve the sender name for the non-brodcast endpoint
