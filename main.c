@@ -191,7 +191,5 @@ int main(int argc, char **argv)
   ec_close_all(&collection);
   closelog();
 
-  open("rules.ninja", O_RDONLY);
-
   return EX_OK;
 }
