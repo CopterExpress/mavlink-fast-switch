@@ -49,7 +49,7 @@ static char log_level[LOG_LEVEL_ARGUMENT_BUF_SIZE] = {
 
 int main(int argc, char **argv)
 {
-  printf("COEX charging station comminucation module v0.1\n");
+  printf("COEX MAVLink fast switch v0.1\n");
 
   // Signal action structure
   struct sigaction act;
@@ -70,21 +70,9 @@ int main(int argc, char **argv)
   int option;
 
   // For every command line argument
-  while ((option = getopt(argc, argv, "c:l:")) != -1)
+  while ((option = getopt(argc, argv, "l:h")) != -1)
     switch (option)
     {
-    // Configuration file path
-    case 'c':
-      // Copy path to the variable
-      strncpy(config_path, optarg, sizeof(config_path));
-
-      // The command line argument value is too long if there is no \0 at the end
-      if (config_path[sizeof(config_path) - 1])
-      {
-        printf("\nConfig path is too long!\n");
-        return EX_USAGE;
-      }
-      break;
     // Log verbosity level
     case 'l':
       // Copy IP adress to the variable
@@ -97,17 +85,33 @@ int main(int argc, char **argv)
         return EX_USAGE;
       }
       break;
+    case 'h':
     // Help request
     case '?':
-      puts("\nOptions:\n\t-c - configuration file;\n\t-l - log verbosity level (debug, info, warn)");
+      puts("\nUsage:\n\tmavlink-fast-switch [-l <log level>] <configuration file>\n\nOptions:\n\t"
+      "-l - log verbosity level (debug, info, warn)");
       return EX_USAGE;
       break;
     default:
       return EX_USAGE;
     }
 
-  // Check if serial port path was enetered
-  if (!config_path[0])
+  // Configuration file path (last position argument)
+  if (optind < argc)
+  {
+    // Copy path to the variable
+    strncpy(config_path, argv[optind], sizeof(config_path));
+
+    // The command line argument value is too long if there is no \0 at the end
+    if (config_path[sizeof(config_path) - 1])
+    {
+      printf("\nConfig path is too long!\n");
+      return EX_USAGE;
+    }
+
+    printf("%s", config_path);
+  }
+  else
   {
     printf("\nConfiguration file path is not set!\n");
     return EX_USAGE;
