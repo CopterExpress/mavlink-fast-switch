@@ -9,21 +9,12 @@
 #include <fcntl.h>
 #include <time.h>
 #include <assert.h>
+#include <sysexits.h>
 
 #include "mavlink_dialect.h"
 
 #include "endpoint.h"
 #include "config.h"
-
-typedef enum
-{
-  SUCCESS = 0,
-  ARGS_INV,             // Invalid command line arguments
-  ENDPOINT_FAILED,      // Failed to setup ENDPOINT
-  SIG_SETUP_FAILED,     // Failed to configure signals
-  FC_SERIAL_DISC = 10,  // FC serial port was disconnected (USB UART?)
-  MAV_INV_LEN           // MAVLink message is too big
-} cscExitCode;
 
 // unistd optarg externals for arguments parsing
 extern char *optarg;
@@ -73,7 +64,7 @@ int main(int argc, char **argv)
   {
     printf("\nError setting signal handler: %s\n", strerror(errno));
 
-    return SIG_SETUP_FAILED;
+    return EX_OSERR;
   }
 
   int option;
@@ -91,7 +82,7 @@ int main(int argc, char **argv)
       if (config_path[sizeof(config_path) - 1])
       {
         printf("\nConfig path is too long!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
     // Log verbosity level
@@ -103,23 +94,23 @@ int main(int argc, char **argv)
       if (log_level[sizeof(log_level) - 1])
       {
         printf("\nLog level is too long!\n");
-        return ARGS_INV;
+        return EX_USAGE;
       }
       break;
     // Help request
     case '?':
       puts("\nOptions:\n\t-c - configuration file;\n\t-l - log verbosity level (debug, info, warn)");
-      return ARGS_INV;
+      return EX_USAGE;
       break;
     default:
-      return ARGS_INV;
+      return EX_USAGE;
     }
 
   // Check if serial port path was enetered
   if (!config_path[0])
   {
     printf("\nConfiguration file path is not set!\n");
-    return ARGS_INV;
+    return EX_USAGE;
   }
 
   int log_level_up;
@@ -135,7 +126,7 @@ int main(int argc, char **argv)
   {
     printf("\nUnknown log verbosity level: %s!\n", log_level);
 
-    return ARGS_INV;
+    return EX_USAGE;
   }
 
   puts("");
@@ -153,9 +144,9 @@ int main(int argc, char **argv)
 
   if (config_load(&collection, config_path) < 0)
   {
-    closelog ();
+    closelog();
 
-    return SIG_SETUP_FAILED;
+    return EX_CONFIG;
   }
 
   // Signals to block
@@ -176,7 +167,7 @@ int main(int argc, char **argv)
     ec_close_all(&collection);
     closelog ();
 
-    return SIG_SETUP_FAILED;
+    return EX_OSERR;
   }
 
   // WARNING: No SIGINT and SIGTERM from this point
@@ -196,5 +187,5 @@ int main(int argc, char **argv)
   ec_close_all(&collection);
   closelog();
 
-  return SUCCESS;
+  return EX_OK;
 }

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.1.0)
 
-set(CMAKE_C_FLAGS "-std=gnu99")
+set(CMAKE_C_FLAGS "-std=gnu11")
 
 project(charging-station-comm C)
 
