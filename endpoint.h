@@ -5,70 +5,165 @@
 #include <unistd.h>
 #include <time.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
 #include "mavlink_dialect.h"
 
+// MAVLink filter type
 typedef enum filter_type
 {
-  FT_DROP = 0,
-  FT_ACCEPT
+  FT_DROP = 0,  // Drop all messages from the list
+  FT_ACCEPT  // Accept only messages from the list
 } filter_type_t, *p_filter_type_t;
 
-#define FILTER_MAX_LEN  (20 + 1)
-#define FILTER_TERMINATION  UINT32_MAX
-#define ENDPOINT_NAME_MAX 25
+// Maximal number of messages in the filter (excluding CSC_FILTER_TERMINATION integer)
+#define CSC_FILTER_LEN_MAX  20
+// Maximal endpoint name length
+#define CSC_ENDPOINT_NAME_MAX 25
 
-int filter_len(uint32_t *filter);
+// Application read buffer size
+// HINT: Mast be equal to the maximum UDP packet size
+#define READ_BUF_SIZE MAVLINK_MAX_PACKET_LEN
+// Terminating MAVLink message ID in filter
+#define CSC_FILTER_TERMINATION  UINT32_MAX
 
-int filter_id(uint32_t *filter, uint32_t id);
+/*
+Get a filter length.
 
+Arguments:
+  filter - the filter.
+
+Return:
+  The filter length.
+*/
+int filter_len(const uint32_t * const filter);
+
+/*
+Find an ID in a filter.
+
+Arguments:
+  filter - th filter.
+
+Return:
+  The ID index in the filter (-1 if not found).
+*/
+int filter_id(const uint32_t * const filter, const uint32_t id);
+
+// MAVLink endpoint
 typedef struct
 {
-  char name[ENDPOINT_NAME_MAX + 1];
-  // UDP socket file descriptor
-  int fd;
+  char name[CSC_ENDPOINT_NAME_MAX + 1];
   // Endpoint sleep interval (-1 - no sleep mode)
   float sleep_interval;
+  // Heartbeat minimal interval (-1 - no minimal interval)
+  float sleep_heartbeat_interval;
+  // Firt heartbeat flag
+  bool first_heartbeat;
+
+  // UDP socket file descriptor
+  int fd;
   // Sleep mode flag
   bool sleep_mode;
   // The last activity timestamp
   struct timespec last_activity;
   // The last heartbeat timestamp
   struct timespec last_heartbeat;
-  // Heartbeat minimal interval (-1 - no minimal interval)
-  float sleep_heartbeat_interval;
-  // Firt heartbeat flag
-  bool first_heartbeat;
   // Broadcast enabled flag
   bool broadcast;
   // The remote target address
   struct sockaddr_in remote_address;
+  // Filter type
   filter_type_t filter_type;
-  uint32_t filter[FILTER_MAX_LEN];
+  // Filter
+  uint32_t filter[CSC_FILTER_LEN_MAX + 1];
 } endpoint_t, *p_endpoint_t;
 
-int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, const uint16_t local_port,
-                                   const char *remote_ip, const uint16_t remote_port, const float sleep_interval,
-                                   const float sleep_heartbeat_interval, filter_type_t filter_type, 
-                                   uint32_t *filter);
+/*
+Open a new UDP endpoint.
 
-static inline void ep_close_udp(p_endpoint_t endpoint)
+Arguments:
+  endpoint - an endpoint structure;
+  name - an endpoint name;
+  local_ip - a local IP address;
+  local_port - a local port (0 to pick any unused port);
+  remote_ip - a remote IP address (NULL to get it from the incoming packet);
+  remote_port - a remote port (0 to pick it from the incoming packet);
+  sleep_interval - an endpoint sleep interval (-1 to disable sleep mode);
+  sleep_heartbeat_interval - an heartbeat messages interval in sleep mode (-1 to disable heartbeat rate limitation);
+  filter_type - a filter type (FT_DROP if no filter is set);
+  filter - a message filter (NULL if no filter is presented).
+
+Return:
+    >= 0 - success,
+    < 0 - error (doesn't set errno).
+*/
+int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char * const local_ip, const uint16_t local_port,
+  const char * const remote_ip, const uint16_t remote_port, const float sleep_interval, const float sleep_heartbeat_interval,
+  filter_type_t filter_type, const uint32_t * const filter);
+
+/*
+Close an UDP endpoint.
+
+Arguments:
+  endpoint - an endpoint to close.
+*/
+static inline void ep_close_udp(const p_endpoint_t endpoint)
 {
   close(endpoint->fd);
 }
 
-int ep_stamp(p_endpoint_t endpoint);
+/*
+Update endpoint last incoming message stamp.
 
-static inline float timespec2float(struct timespec *time)
+Arguments:
+  endpoint - an endpoint to stamp.
+
+Return:
+    >= 0 - success,
+    < 0 - error (doesn't set errno).
+*/
+static inline int ep_stamp(const p_endpoint_t endpoint)
+{
+  if (clock_gettime(CLOCK_MONOTONIC, &endpoint->last_activity) < 0)
+  {
+    syslog(LOG_ERR, "Failed to get clock value: \"%s\"", strerror(errno));
+    
+    return -1;
+  }
+
+  return 0;
+}
+
+/*
+Convert struct timespec to a time in seconds.
+
+Arguments:
+  time - a timespec to convert.
+
+Return:
+    Time in seconds.
+*/
+static inline float timespec2float(const struct timespec * const time)
 {
   return time->tv_sec + time->tv_nsec / 1000000000.0;
 }
 
-static float inline timespec_passed(struct timespec *a, struct timespec *b)
+/*
+Get the time passed between the two timestamps.
+
+Arguments:
+  a - first timestamp;
+  b - second timestamp.
+
+Return:
+    Time passed between the two timestamps.
+*/
+static float inline timespec_passed(const struct timespec * const a, const struct timespec * const b)
 {
   return timespec2float(a) - timespec2float(b);
 }
 
+// Endpoint collection
 typedef struct
 {
   // Used endpoints array
@@ -77,46 +172,160 @@ typedef struct
   endpoint_t endpoints[MAVLINK_COMM_NUM_BUFFERS];
 } endpoints_collection_t, *p_endpoints_collection_t;
 
-static inline void ec_init(p_endpoints_collection_t collection)
+/*
+Init endpoints collection.
+
+Arguments:
+  collection - a collection to init.
+*/
+static inline void ec_init(const p_endpoints_collection_t collection)
 {
   // Reset endpoints collection buffer
   memset(collection, 0, sizeof(endpoints_collection_t));
 }
 
+// Open endpoints error codes
 typedef enum
 {
-  ECCE_FULL = -1,
-  ECCE_OPEN_FAILED = -2
-} ec_create_endpoint_value_t;
+  ECCE_FULL = -1,  // No free MAVLink channels
+  ECCE_OPEN_FAILED = -2  // Failed to open a socket
+} ec_open_endpoint_error_t;
 
-int ec_open_endpoint(p_endpoints_collection_t collection, const char *name, const char *local_ip, const uint16_t local_port,
-  const char *remote_ip, const uint16_t remote_port, float sleep_interval, const float sleep_heartbeat_interval,
-  filter_type_t filter_type, uint32_t *filter);
+/*
+Open a new UDP endpoint in the collection.
 
-static inline void ec_close_endpoint(p_endpoints_collection_t collection, int endpoint_handle)
+Arguments:
+  collection - an endpoint collection;
+  name - an endpoint name;
+  local_ip - a local IP address;
+  local_port - a local port (0 to pick any unused port);
+  remote_ip - a remote IP address (NULL to get it from the incoming packet);
+  remote_port - a remote port (0 to pick it from the incoming packet);
+  sleep_interval - an endpoint sleep interval (-1 to disable sleep mode);
+  sleep_heartbeat_interval - an heartbeat messages interval in sleep mode (-1 to disable heartbeat rate limitation);
+  filter_type - a filter type (FT_DROP if no filter is set);
+  filter - a message filter (NULL if no filter is presented).
+
+Return:
+    >= 0 - opened endpoint index,
+    < 0 - error (doesn't set errno) (ec_open_endpoint_error_t).
+*/
+int ec_open_endpoint(const p_endpoints_collection_t collection, const char * const name, const char * const local_ip,
+  const uint16_t local_port, const char * const remote_ip, const uint16_t remote_port, const float sleep_interval,
+  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter);
+
+/*
+Close a UDP endpoint in the collection.
+
+Arguments:
+  collection - an endpoint collection;
+  endpoint_index - an endpoint index.
+*/
+static inline void ec_close_endpoint(const p_endpoints_collection_t collection, const int endpoint_index)
 {
-  ep_close_udp(&collection->endpoints[endpoint_handle]);
+  ep_close_udp(&collection->endpoints[endpoint_index]);
 
   // Mark the memory block as unused
-  collection->used_set[endpoint_handle] = false;
+  collection->used_set[endpoint_index] = false;
 }
 
-int ec_len(p_endpoints_collection_t collection);
+/*
+Get a collection length.
 
-int ec_stamp_all(p_endpoints_collection_t collection);
+Arguments:
+  collection - the collection.
 
-void ec_close_all(p_endpoints_collection_t collection);
+Return:
+  The collection length.
+*/
+int ec_len(const p_endpoints_collection_t collection);
 
-int ec_fd_max(p_endpoints_collection_t collection);
+/*
+Stamp all endpoints in the collection.
 
-void ec_get_fds(p_endpoints_collection_t collection, fd_set *read_fds);
+Arguments:
+  collection - the collection.
+
+Return:
+  >= 0 - success,
+  < 0 - error (doesn't set errno).
+*/
+int ec_stamp_all(const p_endpoints_collection_t collection);
+
+/*
+Close all endpoints in the collection.
+
+Arguments:
+  collection - the collection.
+*/
+void ec_close_all(const p_endpoints_collection_t collection);
+
+/*
+Find maximal fd for select().
+
+Arguments:
+  collection - the collection to find maximal fd in.
+
+Return:
+  >= 0 - success,
+  < 0 - error (doesn't set errno).
+*/
+int ec_fd_max(const p_endpoints_collection_t collection);
+
+/*
+Get fds for select.
+
+Arguments:
+  collection - the collection to generate fds for.
+
+Return:
+  >= 0 - success,
+  < 0 - error (doesn't set errno).
+*/
+void ec_get_fds(const p_endpoints_collection_t collection, fd_set * const read_fds);
 
 typedef enum
 {
-  ECSR_INV_LEN = -1,
-  ECSR_SEND_FAILED = -2
+  ECSR_OK = 0,
+  ECSR_INV_LEN = -1,  // Invalid MAVLink message binary size
+  ECSR_TIME_ERROR = -2,  // Failed to get current time
+  ECSR_SEND_FAILED = -3  // Socket send error
 } ec_sendto_result_t;
 
-int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, const mavlink_message_t *message);
+/*
+Send MAVLink message to all endpoints.
+
+Arguments:
+  collection - the collection to send massage to;
+  sender_index - a sender endpoint index (-1 if no sender in the collection);
+  message -  a MAVLink message to send.
+
+Return:
+  ECSR_OK - success,
+  < 0 - error (doesn't set errno) (ec_sendto_result_t).
+*/
+int ec_sendto(const p_endpoints_collection_t collection, const int sender_index, const mavlink_message_t * const message);
+
+typedef enum
+{
+  ECEC_OK = 0,
+  ECEC_SELECT_FAILED = -1,  // Failed to start select
+  ECEC_SEND_FAILED = -2,  // Failed to get current time
+  ECEC_STAMP_FAILED = -3  // Socket send error
+} ec_process_result_t;
+
+/*
+Process MAVLink messages from all endpoints.
+
+Arguments:
+  collection - the collection to process messages in;
+  fd_max - a maximum fd for select;
+  orig_mask - an original signals mask to allow callbacks from select.
+
+Return:
+  ECEC_OK - success,
+  < 0 - error (doesn't set errno) (ec_process_result_t).
+*/
+ec_process_result_t ec_select(const p_endpoints_collection_t collection, int const fd_max, const sigset_t * const orig_mask);
 
 #endif

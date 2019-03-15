@@ -8,7 +8,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <time.h>
-#include <sys/select.h>
 #include <assert.h>
 
 #include "mavlink_dialect.h"
@@ -30,10 +29,6 @@ typedef enum
 extern char *optarg;
 extern int optind, opterr, optopt;
 //
-
-// Application read buffer size
-// HINT: Mast be equal to the maximum UDP packet size
-#define READ_BUF_SIZE MAVLINK_MAX_PACKET_LEN
 
 // Volatile flag to stop application (from signal)
 static volatile sig_atomic_t stop_application = false;
@@ -186,114 +181,14 @@ int main(int argc, char **argv)
 
   // WARNING: No SIGINT and SIGTERM from this point
 
-  // Data read buffer
-  uint8_t read_buf[READ_BUF_SIZE];
-  // Read data counter
-  ssize_t data_read;
-
-  // MAVLink message buffer
-  mavlink_message_t message;
-  // MAVLink message parsing status
-  mavlink_status_t status;
-
-  // Read fd set for select
-  fd_set read_fds;
-
   // Get the maximal file descriptor number from all endpoints
   int fd_max = ec_fd_max(&collection);
   assert(fd_max >= 0);
 
-  // select fds number
-  int select_fds_num;
-
-  int endpoint_index;
-  int i;
-
-  socklen_t addr_len;
-
-  int send_all_result;
-
   while (!stop_application)
   {
-    // Get FD set mask for the collection
-    ec_get_fds(&collection, &read_fds);
-
-    // Wait for data at any fd and process SIGINT and SIGTERM
-    select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, &orig_mask);
-
-    // select returned an error
-    if (select_fds_num < 0)
-    {
-      // Ignore signal interrupt
-      if (errno != EINTR)
-        syslog(LOG_ERR, "EPOLL wait failed: %s", strerror(errno));
-      continue;
-    }
-
-    // For every memory block in the collection
-    for (endpoint_index = 0; endpoint_index < MAVLINK_COMM_NUM_BUFFERS; endpoint_index++)
-    {
-      // If the memory block is used check if it is the source of the data
-      if (collection.used_set[endpoint_index] && FD_ISSET(collection.endpoints[endpoint_index].fd, &read_fds))
-      {
-        if (collection.endpoints[endpoint_index].broadcast)
-          // Read the data from the broadcast endpoint (no sender address is needed)
-          data_read = read(collection.endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf));
-        else  // We need to retrieve the sender name for the non-brodcast endpoint
-        {
-          // Set the address length
-          addr_len = sizeof(struct sockaddr_in);
-
-          // Retrieve the data and the sender information, save the sender information in the endpoint
-          data_read = recvfrom(collection.endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf), 0,
-                               (struct sockaddr *)&(collection.endpoints[endpoint_index].remote_address), &addr_len);
-
-          // It's a strange situation
-          if (addr_len != sizeof(struct sockaddr_in))
-          {
-            collection.endpoints[endpoint_index].remote_address.sin_addr.s_addr = INADDR_NONE;
-
-            syslog(LOG_CRIT, "Invalid address size: %u!", addr_len);
-          }
-        }
-
-        // For every byte in the new data
-        for (i = 0; i < data_read; i++)
-        {
-          // Parse using MAVLink
-          if (mavlink_parse_char(endpoint_index, read_buf[i], &message, &status))
-          {
-            if (collection.endpoints[endpoint_index].sleep_mode)
-            {
-              syslog(LOG_INFO, "Endpoint %s is now awake", collection.endpoints[endpoint_index].name);
-              
-              collection.endpoints[endpoint_index].sleep_mode = false;
-            }
-
-            // Send the data to every endpoint except the sender
-            send_all_result = ec_sendto(&collection, endpoint_index, &message);
-
-            if ((send_all_result < 0) && (send_all_result != ECSR_SEND_FAILED))
-            {
-              ec_close_all(&collection);
-              closelog ();
-
-              return 10;
-            }
-
-            if (ep_stamp(&collection.endpoints[endpoint_index]) < 0)
-            {
-              syslog(LOG_ERR, "Failed to stamp monotonic clock value to the endpoint!");
-
-              ec_close_all(&collection);
-              closelog ();
-
-              return 10;
-            }
-          }
-        }
-      }
-    }
+    if (ec_select(&collection, fd_max, &orig_mask) < 0)
+      break;
   }
 
   syslog(LOG_DEBUG, "Stopping application...");

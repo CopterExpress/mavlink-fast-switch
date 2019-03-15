@@ -3,23 +3,24 @@
 #include <fcntl.h>
 #include <string.h>
 #include <stdint.h>
+#include <sys/select.h>
+#include <assert.h>
 
 #include "endpoint.h"
 
-int filter_len(uint32_t *filter)
+int filter_len(const uint32_t * const filter)
 {
   int i = 0;
-  while(filter[i] != FILTER_TERMINATION)
+  while(filter[i] != CSC_FILTER_TERMINATION)
     i++;
 
   return i;
 }
 
-int filter_id(uint32_t *filter, uint32_t id)
+int filter_id(const uint32_t * const filter, const uint32_t id)
 {
   int i = 0;
-  
-  while (filter[i] != FILTER_TERMINATION)
+  while (filter[i] != CSC_FILTER_TERMINATION)
   {
     if (filter[i] == id)
       return i;
@@ -30,19 +31,26 @@ int filter_id(uint32_t *filter, uint32_t id)
   return -1;
 }
 
-int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, const uint16_t local_port,
-                                   const char *remote_ip, const uint16_t remote_port, const float sleep_interval,
-                                   const float sleep_heartbeat_interval, filter_type_t filter_type, 
-                                   uint32_t *filter)
+int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char * const local_ip, const uint16_t local_port,
+  const char * const remote_ip, const uint16_t remote_port, const float sleep_interval, const float sleep_heartbeat_interval,
+  filter_type_t filter_type, const uint32_t * const filter)
 {
   syslog(LOG_INFO,
-    "Opening MAVLink UDP endpoint: name %s, local %s:%u, remote %s:%u, sleep %f, sleep heartbeat %f, filter %s, filter size %i",
+    "Opening MAVLink UDP endpoint: name \"%s\", local %s:%u, remote %s:%u, sleep interval %f, heartbeat interval %f, "
+    "filter %s, filter size %i",
     name, (local_ip) ? local_ip : "ANY", local_port, (remote_ip) ? remote_ip : "UNKNOWN", remote_port, sleep_interval,
     sleep_heartbeat_interval, (filter_type == FT_DROP) ? "DROP" : "ACCEPT", (filter) ? filter_len(filter) : 0);
 
-  strncpy(endpoint->name, name, ENDPOINT_NAME_MAX);
+  // Copy the endpoint name
+  strncpy(endpoint->name, name, CSC_ENDPOINT_NAME_MAX + 1);
+  if (endpoint->name[CSC_ENDPOINT_NAME_MAX] != '\0')
+  {
+    syslog(LOG_ERR, "Endpoint name is too long");
 
-  // Create UDP socket
+    return -1;
+  }
+
+  // Create an UDP socket
   endpoint->fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
   if (endpoint->fd < 0)
@@ -100,20 +108,24 @@ int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, c
   }
 
   endpoint->sleep_interval = sleep_interval;
+  // If endpoint sleep interval is set, the endpoint starts sleeping
   endpoint->sleep_mode = sleep_interval > 0;
 
   endpoint->sleep_heartbeat_interval = sleep_heartbeat_interval;
+  // 
   endpoint->first_heartbeat = true;
 
   endpoint->filter_type = filter_type;
 
+  // Filter is set
   if (filter)
   {
     int i = 0;
 
-    while(filter[i] != FILTER_TERMINATION)
+    // Copy it message by message
+    while(filter[i] != CSC_FILTER_TERMINATION)
     {
-      if (i >= FILTER_MAX_LEN)
+      if (i >= CSC_FILTER_LEN_MAX)
         return -1;
 
       endpoint->filter[i] = filter[i];
@@ -121,10 +133,12 @@ int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, c
       i++;
     };
 
-    endpoint->filter[i] = FILTER_TERMINATION;
+    // Terminate a filter
+    endpoint->filter[i] = CSC_FILTER_TERMINATION;
   }
   else
-    endpoint->filter[0] = FILTER_TERMINATION;
+    // Empty filter
+    endpoint->filter[0] = CSC_FILTER_TERMINATION;
   
 
   // Reset a remote address for the endpoint
@@ -154,7 +168,7 @@ int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, c
   // Check if the remote address is a multicast address
   if (IN_MULTICAST(ntohl(endpoint->remote_address.sin_addr.s_addr)))
   {
-    syslog(LOG_INFO, "Remote address %s is a multicast address!", remote_ip);
+    syslog(LOG_INFO, "Remote address %s is a multicast address", remote_ip);
 
     endpoint->broadcast = true;
 
@@ -175,21 +189,9 @@ int ep_open_udp(p_endpoint_t endpoint, const char *name, const char *local_ip, c
   return 0;
 }
 
-int ep_stamp(p_endpoint_t endpoint)
-{
-  if (clock_gettime(CLOCK_MONOTONIC, &endpoint->last_activity) < 0)
-  {
-    syslog(LOG_ERR, "Failed to get clock value: \"%s\"", strerror(errno));
-    
-    return -1;
-  }
-
-  return 0;
-}
-
-int ec_open_endpoint(p_endpoints_collection_t collection, const char *name, const char *local_ip, const uint16_t local_port,
-  const char *remote_ip, const uint16_t remote_port, float sleep_interval, const float sleep_heartbeat_interval,
-  filter_type_t filter_type, uint32_t *filter)
+int ec_open_endpoint(const p_endpoints_collection_t collection, const char * const name, const char * const local_ip,
+  const uint16_t local_port, const char * const remote_ip, const uint16_t remote_port, const float sleep_interval,
+  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter)
 {
   int i;
 
@@ -207,20 +209,20 @@ int ec_open_endpoint(p_endpoints_collection_t collection, const char *name, cons
 
   syslog(LOG_DEBUG, "Found free memory block: %i", i);
 
-  int handle = ep_open_udp(&collection->endpoints[i], name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
+  int index = ep_open_udp(&collection->endpoints[i], name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
     sleep_heartbeat_interval, filter_type, filter);
 
   // Error opening a new endpoint
-  if (handle < 0)
+  if (index < 0)
     return ECCE_OPEN_FAILED;
 
   // Mark the memory block as used
   collection->used_set[i] = true;
 
-  return handle;
+  return index;
 }
 
-int ec_len(p_endpoints_collection_t collection)
+int ec_len(const p_endpoints_collection_t collection)
 {
   int len = 0;
 
@@ -232,7 +234,7 @@ int ec_len(p_endpoints_collection_t collection)
   return len;
 }
 
-int ec_stamp_all(p_endpoints_collection_t collection)
+int ec_stamp_all(const p_endpoints_collection_t collection)
 {
   int i;
 
@@ -247,7 +249,7 @@ int ec_stamp_all(p_endpoints_collection_t collection)
   return 0;
 }
 
-void ec_close_all(p_endpoints_collection_t collection)
+void ec_close_all(const p_endpoints_collection_t collection)
 {
   int i;
 
@@ -257,7 +259,7 @@ void ec_close_all(p_endpoints_collection_t collection)
       ec_close_endpoint(collection, i);
 }
 
-int ec_fd_max(p_endpoints_collection_t collection)
+int ec_fd_max(const p_endpoints_collection_t collection)
 {
   int fd = -1;
 
@@ -272,7 +274,7 @@ int ec_fd_max(p_endpoints_collection_t collection)
   return fd;
 }
 
-void ec_get_fds(p_endpoints_collection_t collection, fd_set *read_fds)
+void ec_get_fds(const p_endpoints_collection_t collection, fd_set * const read_fds)
 {
   FD_ZERO(read_fds);
 
@@ -282,7 +284,7 @@ void ec_get_fds(p_endpoints_collection_t collection, fd_set *read_fds)
       FD_SET(collection->endpoints[i].fd, read_fds);
 }
 
-int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, const mavlink_message_t *message)
+int ec_sendto(const p_endpoints_collection_t collection, const int sender_index, const mavlink_message_t * const message)
 {
   // Send buffer (to store parsed MAVLink message)
   static uint8_t message_buf[MAVLINK_MAX_PACKET_LEN];
@@ -303,7 +305,7 @@ int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, cons
   for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
   {
     // For every endpoint in the used memory block that is not a sender and has the remote address
-    if (collection->used_set[i] && (i != sender_handle)
+    if (collection->used_set[i] && (i != sender_index)
       && (collection->endpoints[i].remote_address.sin_addr.s_addr != INADDR_NONE))
     {
       static struct timespec current_time;
@@ -312,21 +314,26 @@ int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, cons
       {
         syslog(LOG_ERR, "Failed to get current clock value: \"%s\"", strerror(errno));
         
-        return -3;
+        return ECSR_TIME_ERROR;
       }
 
+      // Sleep mode is enabled
       if (collection->endpoints[i].sleep_interval > 0)
       {
+        // Endpoint is not sleeping and there is no activity on the endpoint for enought time
         if ((!collection->endpoints[i].sleep_mode) &&
           (timespec_passed(&current_time, &collection->endpoints[i].last_activity) > collection->endpoints[i].sleep_interval))
         {
-          syslog(LOG_INFO, "Endpoint %s is now sleeping", collection->endpoints[i].name);
+          syslog(LOG_INFO, "Endpoint \"%s\" (#%i) is now sleeping", collection->endpoints[i].name, i);
 
+          // Sleep mode is now sleeping
           collection->endpoints[i].sleep_mode = true;
         }
 
+        // Endpoint is sleeping
         if (collection->endpoints[i].sleep_mode)
         {
+          // Incoming message is HEARTBEAT
           if (message->msgid == MAVLINK_MSG_ID_HEARTBEAT)
           {
             if ((collection->endpoints[i].sleep_heartbeat_interval > 0) && (!collection->endpoints[i].first_heartbeat)
@@ -335,16 +342,21 @@ int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, cons
             {
               syslog(LOG_DEBUG, "Endpoint %s HEARTBEAT drop due to sleep heartbeat interval", collection->endpoints[i].name);
 
+              // Do not send an incoming message to this endpoint
               continue;
             }
           }
+          // Incoming message is not HEARTBEAT
           else
+            // Do not send an incoming message to this endpoint
             continue;
         }
       }
 
+      // Incoming message is HEARTBEAT
       if (message->msgid == MAVLINK_MSG_ID_HEARTBEAT)
       {
+        // Update timestamp
         collection->endpoints[i].last_heartbeat = current_time;
 
         collection->endpoints[i].first_heartbeat = false;
@@ -352,10 +364,13 @@ int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, cons
 
       static int msgid_index;
 
+      // Find a message ID in the filter
       msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
 
+      // If it is an ACCEPT filter and the message is not found, if it is a DROP filter and the message is found
       if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
           ((collection->endpoints[i].filter_type == FT_DROP) && (msgid_index >= 0)))
+        // Do not send an incoming message to this endpoint
         continue;
 
       // Send the data to the remote address
@@ -369,5 +384,100 @@ int ec_sendto(p_endpoints_collection_t collection, const int sender_handle, cons
     }
   }
 
-  return 0;
+  return ECSR_OK;
+}
+
+int ec_select(const p_endpoints_collection_t collection, const int fd_max, const sigset_t * const orig_mask)
+{
+  // select fds number
+  static int select_fds_num;
+
+  static int endpoint_index;
+  static int i;
+
+  static socklen_t addr_len;
+
+  static int send_all_result;
+
+  // Read fd set for select
+  static fd_set read_fds;
+
+  // Data read buffer
+  static uint8_t read_buf[READ_BUF_SIZE];
+  // Read data counter
+  static ssize_t data_read;
+
+  // MAVLink message buffer
+  static mavlink_message_t message;
+  // MAVLink message parsing status
+  static mavlink_status_t status;
+
+  // Get FD set mask for the collection
+  ec_get_fds(collection, &read_fds);
+
+  // Wait for data at any fd and process SIGINT and SIGTERM
+  select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, orig_mask);
+
+  // select returned an error
+  if (select_fds_num < 0)
+  {
+    // Ignore signal interrupt
+    if (errno != EINTR)
+      syslog(LOG_ERR, "select call failed: %s", strerror(errno));
+    return ECEC_SELECT_FAILED;
+  }
+
+  // For every memory block in the collection
+  for (endpoint_index = 0; endpoint_index < MAVLINK_COMM_NUM_BUFFERS; endpoint_index++)
+  {
+    // If the memory block is used check if it is the source of the data
+    if (collection->used_set[endpoint_index] && FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
+    {
+      if (collection->endpoints[endpoint_index].broadcast)
+        // Read the data from the broadcast endpoint (no sender address is needed)
+        data_read = read(collection->endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf));
+      else  // We need to retrieve the sender name for the non-brodcast endpoint
+      {
+        // Set the address length
+        addr_len = sizeof(struct sockaddr_in);
+
+        // Retrieve the data and the sender information, save the sender information in the endpoint
+        data_read = recvfrom(collection->endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf), 0,
+                              (struct sockaddr *)&(collection->endpoints[endpoint_index].remote_address), &addr_len);
+
+        // It's a strange situation
+        assert(addr_len == sizeof(struct sockaddr_in));
+      }
+
+      // For every byte in the new data
+      for (i = 0; i < data_read; i++)
+      {
+        // Parse using MAVLink
+        if (mavlink_parse_char(endpoint_index, read_buf[i], &message, &status))
+        {
+          if (collection->endpoints[endpoint_index].sleep_mode)
+          {
+            syslog(LOG_INFO, "Endpoint \"%s\" is now awake", collection->endpoints[endpoint_index].name);
+            
+            collection->endpoints[endpoint_index].sleep_mode = false;
+          }
+
+          // Send the data to every endpoint except the sender
+          send_all_result = ec_sendto(collection, endpoint_index, &message);
+
+          if ((send_all_result < 0) && (send_all_result != ECSR_SEND_FAILED))
+            return ECEC_SEND_FAILED;
+
+          if (ep_stamp(&collection->endpoints[endpoint_index]) < 0)
+          {
+            syslog(LOG_ERR, "Failed to stamp monotonic clock value to the endpoint!");
+
+            return ECEC_STAMP_FAILED;
+          }
+        }
+      }
+    }
+  }
+
+  return ECEC_OK;
 }

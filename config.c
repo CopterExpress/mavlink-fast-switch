@@ -7,10 +7,8 @@
 
 #include <cyaml/cyaml.h>
 
-// WARNING: Make sure the correct dialect is included
-#include "mavlink_dialect.h"
-
 #include "config.h"
+#include "mavlink_dialect.h"
 
 // Filter type dictionary
 static const cyaml_strval_t config_filter_type_strings[] = 
@@ -45,7 +43,7 @@ static const cyaml_schema_field_t config_filter_fields_schema[] =
         CYAML_ARRAY_LEN(config_filter_type_strings)),
     // MAVLink message name pointers array >= 1, <= CSC_FILTER_MESSAGES_MAX
     CYAML_FIELD_SEQUENCE("messages", CYAML_FLAG_POINTER, struct config_filter, messages, &string_ptr_schema,
-        1, CSC_FILTER_MESSAGES_MAX),
+        1, CSC_FILTER_LEN_MAX),
     CYAML_FIELD_END
 };
 
@@ -230,31 +228,67 @@ static void cyaml_log_syslog(cyaml_log_t level, const char *fmt, va_list args)
     vsyslog(priority, fmt, args);
 }
 
-static int open_endpoint_from_config(p_endpoints_collection_t collection, struct config_endpoint *endpoint,
-    const char *name, uint16_t local_port)
+/*
+Open new endpoit from the endpoint configuration and add to the collection.
+
+HINT: All integrity checks must be completed before the call.
+
+Arguments:
+    collection - an endpoint collection;
+    endpoint - an endpoint collection;
+    name - an endpoint name to override (NULL - do not override the endpoint name);
+    local_port - a local port to override (-1 - do not override the endpoint name).
+
+Return:
+    >= 0 - success,
+    < 0 - error (doesn't set errno).
+*/
+static int open_endpoint_from_config(const p_endpoints_collection_t collection, const struct config_endpoint *endpoint,
+    const char *name, int local_port)
 {
+    // No endpoint name to override
+    if (!name)
+        name = endpoint->name;
+
     const char *local_ip;
 
+    // Local endpoint configuration is set
     if (endpoint->local)
     {
+        // The actual string or NULL (all interfaces)
         local_ip = endpoint->local->ip;
 
-        if (!local_port)
+        // The local port override is not set
+        if (local_port < 0)
+            // The actual local port or 0 (any free port) if not set
             local_port = (endpoint->local->port) ? *endpoint->local->port : 0;
     }
+    // Local endpoint configuration is not set
     else
+    {
+        // All interfaces
         local_ip = NULL;
+
+        // The local port override is not set
+        if (local_port >= 0)
+            // Use any free port
+            local_port = 0;
+    }
 
     const char *remote_ip;
     uint16_t remote_port;
 
+    // Remote endpoint configuration is set
     if (endpoint->remote)
     {
+        // Both are defined according to the YAML schema
         remote_ip = endpoint->remote->ip;
         remote_port = endpoint->remote->port;
     }
+    // Remote endpoint configuration is not set
     else
     {
+        // Determine by the incoming packets
         remote_ip = NULL;
         remote_port = 0;
     }
@@ -262,20 +296,25 @@ static int open_endpoint_from_config(p_endpoints_collection_t collection, struct
     float sleep_interval;
     float heartbeat_interval;
 
+    // Endpoint sleep configuration is set
     if (endpoint->sleep)
     {
         sleep_interval = endpoint->sleep->interval;
+        // Get the endpoint heartbeat interval if set, disable if doesn't
         heartbeat_interval = (endpoint->sleep->heartbeat_interval) ? *endpoint->sleep->heartbeat_interval : -1;
-    }   
+    }  
+    // Endpoint sleep configuration is not set 
     else
     {
+        // Sleep mode disabled
         sleep_interval = -1;
         heartbeat_interval = -1;
     }
     
     filter_type_t filter_type;
-    uint32_t filter[FILTER_MAX_LEN];
+    uint32_t filter[CSC_FILTER_LEN_MAX + 1];
 
+    // Endpoint filter configuration is set
     if (endpoint->filter)
     {
         filter_type = endpoint->filter->type;
@@ -283,33 +322,37 @@ static int open_endpoint_from_config(p_endpoints_collection_t collection, struct
         const mavlink_message_info_t *message_info;
 
         int message_index;
+        // For every string MAVLink message ID
         for (message_index = 0; message_index < endpoint->filter->messages_count; message_index++)
         {
+            // Find the MAVLink message information
             message_info = mavlink_get_message_info_by_name(endpoint->filter->messages[message_index]);
 
             if (!message_info)
             {
-                syslog(LOG_ERR, "Unknown message: \"%s\"!", endpoint->filter->messages[message_index]);
+                syslog(LOG_ERR, "Unknown MAVLink message: \"%s\"!", endpoint->filter->messages[message_index]);
 
                 return -1;
             }
 
+            // Save the message ID
             filter[message_index] = message_info->msgid;
 
             syslog(LOG_DEBUG, "Message ID: \"%s\" -> %u", endpoint->filter->messages[message_index], filter[message_index]);
         }
         
-        filter[message_index] = FILTER_TERMINATION;
+        // Terminate the filter
+        filter[message_index] = CSC_FILTER_TERMINATION;
     }
+    // Endpoint filter configuration is not set
     else
     {
-        filter_type = FT_DROP; 
-        filter[0] = FILTER_TERMINATION;
+        filter_type = FT_DROP;
+        // Empty filter
+        filter[0] = CSC_FILTER_TERMINATION;
     }
 
-    if (!name)
-        name = endpoint->name;
-
+    // Open a new endpoint
     return ec_open_endpoint(collection, name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
         heartbeat_interval, filter_type, filter);
 }
@@ -317,12 +360,12 @@ static int open_endpoint_from_config(p_endpoints_collection_t collection, struct
 // libcyaml configuration
 static const cyaml_config_t lib_config = 
 {
-    .log_level = CYAML_LOG_INFO,  // Maximum verbosity level (syslog handles the real output)
+    .log_level = CYAML_LOG_INFO,  // libcyaml verbosity level (syslog handles the real output)
     .log_fn = cyaml_log_syslog,  // Log using syslog
     .mem_fn = cyaml_mem, // Use the default memory allocator
 };
 
-int config_load(p_endpoints_collection_t collection, const char *config_file_path)
+int config_load(const p_endpoints_collection_t collection, const char *config_file_path)
 {
     // Root configuration struct
     struct config *app_config;
@@ -339,76 +382,114 @@ int config_load(p_endpoints_collection_t collection, const char *config_file_pat
         return -1;
     }
 
-    syslog(LOG_DEBUG, "Endpoints found: %u", app_config->endpoints_count);
+    syslog(LOG_DEBUG, "Endpoints in configuration: %u", app_config->endpoints_count);
 
-    if (app_config->endpoints_count < 1)
+    if (app_config->endpoints_count <= 1)
     {
-        syslog(LOG_ERR, "Endpoints number has to be more than 1!");
+        syslog(LOG_ERR, "Configuration mast have more than 1 endpoint!");
 
+        // Free libcyaml resources
         cyaml_free(&lib_config, &config_schema, app_config, 0);
 
         return -1;
     }
 
+    // For every endpoint configuration
     for (int endpoint_index = 0; endpoint_index < app_config->endpoints_count; endpoint_index++)
     {
-        syslog(LOG_DEBUG, "Entering endpoint: %u", endpoint_index);
+        syslog(LOG_DEBUG, "Entering endpoint: \"%s\" (#%u)", app_config->endpoints[endpoint_index].name, endpoint_index);
 
+        // User can't set a local port for the multiport endpoint
         if (app_config->endpoints[endpoint_index].local && app_config->endpoints[endpoint_index].local->port &&
             app_config->endpoints[endpoint_index].local->ports)
         {
-            syslog(LOG_ERR, "Endpoint can't have both local port and local ports interval!");
+            syslog(LOG_ERR, "Multiport endpoint can't have a preset local port!");
 
+            // Free libcyaml resources
             cyaml_free(&lib_config, &config_schema, app_config, 0);
 
             return -1;
         }
 
+        // User can't set a negative sleep intervals
         if (app_config->endpoints[endpoint_index].sleep && ((app_config->endpoints[endpoint_index].sleep->interval <= 0) ||
             ((app_config->endpoints[endpoint_index].sleep->heartbeat_interval) &&
             (*app_config->endpoints[endpoint_index].sleep->heartbeat_interval <= 0))))
         {
             syslog(LOG_ERR, "Endpoint sleep intervals must be positive numbers!");
 
+            // Free libcyaml resources
             cyaml_free(&lib_config, &config_schema, app_config, 0);
 
             return -1;
         }
 
+        // It is a multiport endpoint
         if (app_config->endpoints[endpoint_index].local && app_config->endpoints[endpoint_index].local->ports)
         {
-            syslog(LOG_INFO, "Multiport endpoint: %u", endpoint_index);
+            syslog(LOG_INFO, "Multiport endpoint: \"%s\" (#%u)", app_config->endpoints[endpoint_index].name, endpoint_index);
 
-            char multiport_name[ENDPOINT_NAME_MAX + 1];
+            // Start port > end port
+            if (app_config->endpoints[endpoint_index].local->ports->start >
+                app_config->endpoints[endpoint_index].local->ports->end)
+            {
+                syslog(LOG_ERR, "Multiport endpoint start port is greater tahn end port!");
+
+                // Free libcyaml resources
+                cyaml_free(&lib_config, &config_schema, app_config, 0);
+
+                return -1;
+            }
+
+            // Start port == end port
+            if (app_config->endpoints[endpoint_index].local->ports->start ==
+                app_config->endpoints[endpoint_index].local->ports->end)
+            {
+                syslog(LOG_ERR, "Multiport endpoint with one port! Use single port endpoint declaration instead.");
+
+                // Free libcyaml resources
+                cyaml_free(&lib_config, &config_schema, app_config, 0);
+
+                return -1;
+            }
+
+            // Buffer has extra space for a multiport endpoint postfix (@<local_port>)
+            char multiport_name[CSC_ENDPOINT_NAME_MAX + 1];
             int result;
 
+            // For every port in the multiport endpoint port interval
             for (uint16_t local_port = app_config->endpoints[endpoint_index].local->ports->start;
                 local_port <= app_config->endpoints[endpoint_index].local->ports->end;
                 local_port++)
             {
                 syslog(LOG_INFO, "Processing port: %u", local_port);
 
-                result = snprintf(multiport_name, ENDPOINT_NAME_MAX, "%s@%u", app_config->endpoints[endpoint_index].name,
+                // Generate a name for the multiport endpoint instance
+                result = snprintf(multiport_name, sizeof(multiport_name), "%s@%u", app_config->endpoints[endpoint_index].name,
                     local_port);
 
                 assert(result > 0);
 
+                // Open a new endpoint and override the name and the local port
                 if (open_endpoint_from_config(collection, app_config->endpoints + endpoint_index, multiport_name, local_port) < 0)
                 {
                     syslog(LOG_ERR, "Failed to open endpoint!");
 
+                    // Free libcyaml resources
                     cyaml_free(&lib_config, &config_schema, app_config, 0);
 
                     return -1;
                 }
             }
         }
+        // It is a single port endpoint
         else
         {
-            if (open_endpoint_from_config(collection, app_config->endpoints + endpoint_index, NULL, 0) < 0)
+            if (open_endpoint_from_config(collection, app_config->endpoints + endpoint_index, NULL, -1) < 0)
             {
                 syslog(LOG_ERR, "Failed to open endpoint!");
 
+                // Free libcyaml resources
                 cyaml_free(&lib_config, &config_schema, app_config, 0);
 
                 return -1;
@@ -416,7 +497,7 @@ int config_load(p_endpoints_collection_t collection, const char *config_file_pat
         }
     }
 
-    // Free the data
+    // Free libcyaml resources
     cyaml_free(&lib_config, &config_schema, app_config, 0);
 
     return 0;
