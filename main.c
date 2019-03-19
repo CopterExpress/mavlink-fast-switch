@@ -10,6 +10,7 @@
 #include <time.h>
 #include <assert.h>
 #include <sysexits.h>
+#include <linux/limits.h>
 
 #include "mavlink_dialect.h"
 
@@ -32,18 +33,18 @@ void signal_handler(int signum)
 }
 
 // Config file path command line argument option value buffer size
-#define CONFIG_FILE_ARGUMENT_BUF_SIZE 50
+#define CONFIG_FILE_ARGUMENT_MAX_LEN 200
 
 // Log verbosity level command line argument option value buffer size
-#define LOG_LEVEL_ARGUMENT_BUF_SIZE 16
+#define LOG_LEVEL_ARGUMENT_MAX_LEN 16
 
 // Config file path
-static char config_path[CONFIG_FILE_ARGUMENT_BUF_SIZE] = {
+static char config_path[CONFIG_FILE_ARGUMENT_MAX_LEN + 1] = {
     '\0',
 };
 
 // Log level verbosity (string)
-static char log_level[LOG_LEVEL_ARGUMENT_BUF_SIZE] = {
+static char log_level[LOG_LEVEL_ARGUMENT_MAX_LEN + 1] = {
     'i', 'n', 'f', 'o', '\0'
 };
 
@@ -137,7 +138,7 @@ int main(int argc, char **argv)
 
   setlogmask(LOG_UPTO(log_level_up));
 
-  openlog("charging-station-comm", LOG_CONS | LOG_PID | LOG_NDELAY | LOG_PERROR, LOG_USER);
+  openlog("charging-station-comm", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_USER);
   
   syslog(LOG_DEBUG, "Debug mode enabled");
 
