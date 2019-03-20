@@ -56,20 +56,26 @@ int main(int argc, char **argv)
 
   // Log verbosity level command line argument value
   char *log_level = NULL;
+  // Log data to syslog and stderr
+  bool log_stderr = false;
 
   // For every command line argument
-  while ((option = getopt(argc, argv, "l:h")) != -1)
+  while ((option = getopt(argc, argv, "l:hv")) != -1)
     switch (option)
     {
     // Log verbosity level
     case 'l':
       log_level = optarg;
       break;
+    // Log to syslog and stderr
+    case 'v':
+      log_stderr = true;
+      break;
     case 'h':
     // Help request
     case '?':
-      puts("\nUsage:\n\tmavlink-fast-switch [-l <log level>] <configuration file>\n\nOptions:\n\t"
-      "-l - log verbosity level (debug, info, warn)");
+      puts("\nUsage:\n\tmavlink-fast-switch [-l <log level>] [-v] <configuration file>\n\nOptions:\n\t"
+      "-l - log verbosity level (debug, info, warn)\n\t-v - log to syslog and stderr");
       return EX_USAGE;
       break;
     default:
@@ -107,11 +113,12 @@ int main(int argc, char **argv)
     return EX_USAGE;
   }
 
-  puts("");
+  if (log_stderr)
+    puts("");
 
   setlogmask(LOG_UPTO(log_level_up));
 
-  openlog("charging-station-comm", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_USER);
+  openlog("mavlink-fast-switch", LOG_CONS | LOG_PID | LOG_NDELAY | ((log_stderr) ? LOG_PERROR : 0), LOG_USER);
   
   syslog(LOG_DEBUG, "Debug mode enabled");
 
