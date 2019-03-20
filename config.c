@@ -39,7 +39,7 @@ static const cyaml_schema_value_t string_ptr_schema =
 static const cyaml_schema_field_t config_filter_fields_schema[] =
 {
     // Filter type
-    CYAML_FIELD_ENUM("type", CYAML_FLAG_DEFAULT, struct config_filter, type, config_filter_type_strings,
+    CYAML_FIELD_ENUM("type", CYAML_FLAG_CASE_INSENSITIVE, struct config_filter, type, config_filter_type_strings,
         CYAML_ARRAY_LEN(config_filter_type_strings)),
     // MAVLink message name pointers array >= 1, <= CSC_FILTER_MESSAGES_MAX
     CYAML_FIELD_SEQUENCE("messages", CYAML_FLAG_POINTER, struct config_filter, messages, &string_ptr_schema,
