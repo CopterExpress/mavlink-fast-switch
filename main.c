@@ -10,7 +10,6 @@
 #include <time.h>
 #include <assert.h>
 #include <sysexits.h>
-#include <linux/limits.h>
 
 #include "mavlink_dialect.h"
 
@@ -32,22 +31,6 @@ void signal_handler(int signum)
   stop_application = true;
 }
 
-// Config file path command line argument option value buffer size
-#define CONFIG_FILE_ARGUMENT_MAX_LEN 200
-
-// Log verbosity level command line argument option value buffer size
-#define LOG_LEVEL_ARGUMENT_MAX_LEN 16
-
-// Config file path
-static char config_path[CONFIG_FILE_ARGUMENT_MAX_LEN + 1] = {
-    '\0',
-};
-
-// Log level verbosity (string)
-static char log_level[LOG_LEVEL_ARGUMENT_MAX_LEN + 1] = {
-    'i', 'n', 'f', 'o', '\0'
-};
-
 int main(int argc, char **argv)
 {
   printf("COEX MAVLink fast switch v0.1\n");
@@ -68,7 +51,11 @@ int main(int argc, char **argv)
     return EX_OSERR;
   }
 
+  // Current command line option
   int option;
+
+  // Log verbosity level command line argument value
+  char *log_level = NULL;
 
   // For every command line argument
   while ((option = getopt(argc, argv, "l:h")) != -1)
@@ -76,15 +63,7 @@ int main(int argc, char **argv)
     {
     // Log verbosity level
     case 'l':
-      // Copy IP adress to the variable
-      strncpy(log_level, optarg, sizeof(log_level));
-
-      // The command line argument value is too long if there is no \0 at the end
-      if (log_level[sizeof(log_level) - 1])
-      {
-        printf("\nLog level is too long!\n");
-        return EX_USAGE;
-      }
+      log_level = optarg;
       break;
     case 'h':
     // Help request
@@ -97,21 +76,12 @@ int main(int argc, char **argv)
       return EX_USAGE;
     }
 
+  // Config file path command line argument value
+  char *config_path = NULL;
+
   // Configuration file path (last position argument)
   if (optind < argc)
-  {
-    // Copy path to the variable
-    strncpy(config_path, argv[optind], sizeof(config_path));
-
-    // The command line argument value is too long if there is no \0 at the end
-    if (config_path[sizeof(config_path) - 1])
-    {
-      printf("\nConfig path is too long!\n");
-      return EX_USAGE;
-    }
-
-    printf("%s", config_path);
-  }
+    config_path = argv[optind];
   else
   {
     printf("\nConfiguration file path is not set!\n");
@@ -120,8 +90,11 @@ int main(int argc, char **argv)
 
   int log_level_up;
 
-  // Check if GCS IP address was enetered
-  if (!strcmp(log_level, "debug"))
+  // Default log level
+  if (!log_level)
+    log_level_up = LOG_INFO;
+  // Process the user requested log level
+  else if (!strcmp(log_level, "debug"))
     log_level_up = LOG_DEBUG;
   else if (!strcmp(log_level, "info"))
     log_level_up = LOG_INFO;
