@@ -1,33 +1,52 @@
+# MAVLink endpoints
 endpoints:
+  # MAVLink charging station endpoint
   - name: "charging-station"
     local:
       port: 14588
-    sleep:
-      interval: 5
-      heartbeat-interval: 2
+  # UAV endpoint
   - name: "uav"
     local:
       port: 14589
+  # Unfiltered clients
   - name: "clients"
     local:
+      # Multiport endpoint
       ports:
         start: 14591
         end: 14595
+  # Filtered clients
   - name: "clients-filtered"
     local:
+      # Multiport endpoint
       ports:
         start: 14596
         end: 14597
     filter:
+      # Blacklist filter
       type: "drop"
       messages:
-        - "SYS_STATUS"
-        - "GPS_RAW_INT"
+        # Reject RTK GPS RTCM data
+        - "GPS_RTCM_DATA"
+        # Reject high resolution IMU data from the UAV
+        - "HIGHRES_IMU"
+    # Enable sleep mode if no messages from the other side
+    sleep:
+      # Wait 5 seconds
+      interval: 5
+      # Send heartbeats not more often than 1 message per 3 seconds
+      heartbeat-interval: 3
+  # Broadcast endpoint
   - name: "broadcast"
     remote:
+      # Broadcast remote address
       ip: "192.168.0.255"
       port: 14600
-    broadcast: "discovery"
+    # Enable broadcast
+    broadcast: "normal"
+    # Enable sleep mode if no messages from the other side
     sleep:
+      # Wait 5 seconds
       interval: 5
-      heartbeat-interval: 1
+      # Send heartbeats not more often than 1 message per 3 seconds
+      heartbeat-interval: 3
