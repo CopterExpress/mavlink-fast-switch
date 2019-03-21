@@ -46,7 +46,7 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   // Reset the endpoint struct
   memset(endpoint, 0, sizeof(endpoint_t));
 
-  // Allocate memory for an endpoit name
+  // Allocate memory for the endpoint name
   endpoint->name = (char *)malloc(strlen(name) + 1);
 
   // Check if the memory was allocated
@@ -60,12 +60,40 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   // Copy the endpoint name
   strcpy(endpoint->name, name);
 
+  endpoint->filter_type = filter_type;
+
+  // Filter is set
+  if (filter)
+  {
+    // Calculate a source filter size
+    size_t filter_size = (filter_len(filter) + 1) * sizeof(uint32_t);
+
+    endpoint->filter = (uint32_t *)malloc(filter_size);
+
+    // Memory allocation has failed
+    if (!filter_size)
+    {
+      syslog(LOG_ERR, "Failed to allocate memory for a filter: \"%s\"", strerror(errno));
+
+      free(endpoint->name);
+
+      return -1;
+    }
+
+    // Copy the source filter to the target filter
+    memcpy(endpoint->filter, filter, filter_size);
+  }
+
   // Create an UDP socket
   endpoint->fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
   if (endpoint->fd < 0)
   {
     syslog(LOG_ERR, "Failed to create a new socket: \"%s\"", strerror(errno));
+
+    free(endpoint->name);
+
+    free(endpoint->filter);
 
     return -1;
   }
@@ -88,6 +116,10 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
 
       close(endpoint->fd);
 
+      free(endpoint->name);
+
+      free(endpoint->filter);
+
       return -1;
     }
   }
@@ -104,6 +136,10 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
 
     close(endpoint->fd);
 
+    free(endpoint->name);
+
+    free(endpoint->filter);
+
     return -1;
   }
 
@@ -113,6 +149,10 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
     syslog(LOG_ERR, "Failed to set non-blocking mode on the socket: \"%s\"", strerror(errno));
 
     close(endpoint->fd);
+
+    free(endpoint->name);
+
+    free(endpoint->filter);
 
     return -1;
   }
@@ -124,33 +164,7 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   endpoint->sleep_heartbeat_interval = sleep_heartbeat_interval;
   // 
   endpoint->first_heartbeat = true;
-
-  endpoint->filter_type = filter_type;
-
-  // Filter is set
-  if (filter)
-  {
-    int i = 0;
-
-    // Copy it message by message
-    while(filter[i] != CSC_FILTER_TERMINATION)
-    {
-      if (i >= CSC_FILTER_LEN_MAX)
-        return -1;
-
-      endpoint->filter[i] = filter[i];
-
-      i++;
-    };
-
-    // Terminate a filter
-    endpoint->filter[i] = CSC_FILTER_TERMINATION;
-  }
-  else
-    // Empty filter
-    endpoint->filter[0] = CSC_FILTER_TERMINATION;
   
-
   // Reset a remote address for the endpoint
   memset(&endpoint->remote_address, 0, sizeof(endpoint->remote_address));
 
@@ -166,6 +180,10 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
       syslog(LOG_ERR, "Invalid remote IP address: \"%s\"", remote_ip);
 
       close(endpoint->fd);
+
+      free(endpoint->name);
+
+      free(endpoint->filter);
 
       return -1;
     }
@@ -186,6 +204,10 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
 
         close(endpoint->fd);
 
+        free(endpoint->name);
+
+        free(endpoint->filter);
+
         return -1;
       }
     }
@@ -199,32 +221,20 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   return 0;
 }
 
-int ec_increase_size(p_endpoints_collection_t collection, unsigned int num)
+ec_increase_size_result_t ec_increase_size(const p_endpoints_collection_t collection)
 {
-  syslog(LOG_DEBUG, "Collection size increase requested by %u elements", num);
+  syslog(LOG_DEBUG, "Collection size increase requested");
 
-  if (!num)
-    return EIS_OK;
-
-  if (collection->size + num > MAVLINK_COMM_NUM_BUFFERS)
+  // Can't allocate more than a fixed number of MAVLink channels
+  if (collection->size + 1 > MAVLINK_COMM_NUM_BUFFERS)
   {
     syslog(LOG_ERR, "No more MAVLink channels avalible");
 
     return EIS_LIMIT;
   }
-
-
-  collection->used_set = (bool *)realloc(collection->used_set, (collection->size + num) * sizeof(bool));
-
-  if (!collection->used_set)
-  {
-    syslog(LOG_ERR, "Failed to reallocate memory for usage set in the collection: \"%s\"", strerror(errno));
-
-    return EIS_HEAP_ERROR;
-  }
   
-
-  collection->endpoints = (p_endpoint_t)realloc(collection->endpoints, (collection->size + num) * sizeof(endpoint_t));
+  // Reallocate memory for the endpoints structs
+  collection->endpoints = (p_endpoint_t)realloc(collection->endpoints, (collection->size + 1) * sizeof(endpoint_t));
 
   if (!collection->endpoints)
   {
@@ -233,7 +243,10 @@ int ec_increase_size(p_endpoints_collection_t collection, unsigned int num)
     return EIS_HEAP_ERROR;
   }
 
-  collection->size += num;
+  // Increase the collection size
+  collection->size++;
+
+  syslog(LOG_DEBUG, "New collection size: %u", collection->size);
 
   return EIS_OK;
 }
@@ -243,78 +256,58 @@ int ec_open_endpoint(const p_endpoints_collection_t collection, const char * con
   const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter,
   broadcast_type_t broadcast_type)
 {
-  int i;
-
-  // Look for the first empty memory block
-  for (i = 0; i < collection->size; i++)
-    if (!collection->used_set[i])
-      break;
-
-  if (i == collection->size)
+  // Increase the endpoints collection
+  switch (ec_increase_size(collection))
   {
-    switch (ec_increase_size(collection, 1))
-    {
+    // No more MAVLink channels are availible
     case EIS_LIMIT:
       return ECCE_FULL;
+    // Failed to reallocate memory
     case EIS_HEAP_ERROR:
       return ECCE_RESIZE_ERROR;
     default:
       break;
-    }
-
-    i = collection->size - 1;
   }
 
-  syslog(LOG_DEBUG, "Found free memory block: %i", i);
+  // Calculate the last index
+  unsigned int last_index = collection->size - 1;
 
-  int index = ep_open_udp(collection->endpoints + i, name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
-    sleep_heartbeat_interval, filter_type, filter, broadcast_type);
+  syslog(LOG_DEBUG, "Using endpoint at the memory block: %i", last_index);
+
+  int result;
 
   // Error opening a new endpoint
-  if (index < 0)
+  if ((result = ep_open_udp(collection->endpoints + last_index, name, local_ip, local_port, remote_ip, remote_port,
+    sleep_interval, sleep_heartbeat_interval, filter_type, filter, broadcast_type)) < 0)
     return ECCE_OPEN_FAILED;
 
-  // Mark the memory block as used
-  collection->used_set[i] = true;
-
-  return index;
-}
-
-int ec_len(const p_endpoints_collection_t collection)
-{
-  int len = 0;
-
-  // Count all used memory blocks
-  for (int i = 0; i < collection->size; i++)
-    if (collection->used_set[i])
-      len++;
-
-  return len;
+  return result;
 }
 
 int ec_stamp_all(const p_endpoints_collection_t collection)
 {
   int i;
 
-  // Stamp monotonic clock value for endpoints in the used memory blocks
+  // Stamp monotonic clock value for endpoints
   for (i = 0; i < collection->size; i++)
-    if (collection->used_set[i])
-    {
-      if (ep_stamp(&collection->endpoints[i]) < 0)
-        return -1;
-    }
+    if (ep_stamp(collection->endpoints + i) < 0)
+      return -1;
 
   return 0;
 }
 
-void ec_close_all(const p_endpoints_collection_t collection)
+void ec_free_all(const p_endpoints_collection_t collection)
 {
   int i;
 
-  // Close endpoints in the used memory blocks
   for (i = 0; i < collection->size; i++)
-    if (collection->used_set[i])
-      ec_close_endpoint(collection, i);
+  {
+    // Close endpoint
+    ep_free_udp(collection->endpoints + i);
+
+    // Reset the MAVLink channel
+    mavlink_reset_channel_status(i);
+  }
 }
 
 int ec_fd_max(const p_endpoints_collection_t collection)
@@ -323,7 +316,7 @@ int ec_fd_max(const p_endpoints_collection_t collection)
 
   // Find file descriptor with the max number in the used memory blocks
   for (int i = 0; i < collection->size; i++)
-    if (collection->used_set[i] && (fd < collection->endpoints[i].fd))
+    if (fd < collection->endpoints[i].fd)
       fd = collection->endpoints[i].fd;
 
   if (fd < 0)
@@ -338,7 +331,6 @@ void ec_get_fds(const p_endpoints_collection_t collection, fd_set * const read_f
 
   // Build select file descriptors set from the file descriptors in the used memory blocks
   for (int i = 0; i < collection->size; i++)
-    if (collection->used_set[i])
       FD_SET(collection->endpoints[i].fd, read_fds);
 }
 
@@ -363,8 +355,7 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
   for (int i = 0; i < collection->size; i++)
   {
     // For every endpoint in the used memory block that is not a sender and has the remote address
-    if (collection->used_set[i] && (i != sender_index)
-      && (collection->endpoints[i].remote_address.sin_addr.s_addr != INADDR_NONE))
+    if ((i != sender_index) && (collection->endpoints[i].remote_address.sin_addr.s_addr != INADDR_NONE))
     {
       static struct timespec current_time;
 
@@ -422,14 +413,18 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
 
       static int msgid_index;
 
-      // Find a message ID in the filter
-      msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
+      // If filter is set for the endpoint
+      if (collection->endpoints[i].filter)
+      {
+        // Find a message ID in the filter
+        msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
 
-      // If it is an ACCEPT filter and the message is not found, if it is a DROP filter and the message is found
-      if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
-          ((collection->endpoints[i].filter_type == FT_DROP) && (msgid_index >= 0)))
-        // Do not send an incoming message to this endpoint
-        continue;
+        // If it is an ACCEPT filter and the message is not found, if it is a DROP filter and the message is found
+        if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
+            ((collection->endpoints[i].filter_type == FT_DROP) && (msgid_index >= 0)))
+          // Do not send an incoming message to this endpoint
+          continue;
+      }
 
       // Send the data to the remote address
       if (sendto(collection->endpoints[i].fd, message_buf, message_length, 0,
@@ -445,7 +440,7 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
   return ECSR_OK;
 }
 
-int ec_select(const p_endpoints_collection_t collection, const int fd_max, const sigset_t * const orig_mask)
+ec_process_result_t ec_select(const p_endpoints_collection_t collection, const int fd_max, const sigset_t * const orig_mask)
 {
   // select fds number
   static int select_fds_num;
@@ -488,9 +483,10 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
   // For every memory block in the collection
   for (endpoint_index = 0; endpoint_index < collection->size; endpoint_index++)
   {
-    // If the memory block is used check if it is the source of the data
-    if (collection->used_set[endpoint_index] && FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
+    // If the endpoint is the source of the data
+    if (FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
     {
+      // If remote address is fixed
       if (collection->endpoints[endpoint_index].fix_remote)
         // Read the data from the broadcast endpoint (no sender address is needed)
         data_read = read(collection->endpoints[endpoint_index].fd, &read_buf, sizeof(read_buf));
@@ -542,11 +538,10 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
 
 void ec_free(const p_endpoints_collection_t collection)
 {
-  ec_close_all(collection);
+  // Free all the endpoints
+  ec_free_all(collection);
 
+  // Free the collection buffer
   free(collection->endpoints);
   collection->endpoints = NULL;
-
-  free(collection->used_set);
-  collection->used_set = NULL;
 }

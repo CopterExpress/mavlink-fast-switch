@@ -17,7 +17,7 @@ typedef enum filter_type
   FT_ACCEPT  // Accept only messages from the list
 } filter_type_t, *p_filter_type_t;
 
-// Maximal number of messages in the filter (excluding CSC_FILTER_TERMINATION integer)
+// Maximal number of messages in the filter (excluding CSC_FILTER_TERMINATION)
 #define CSC_FILTER_LEN_MAX  20
 // Maximal endpoint name length
 #define CSC_ENDPOINT_NAME_MAX 25
@@ -84,7 +84,7 @@ typedef struct
   // Filter type
   filter_type_t filter_type;
   // Filter
-  uint32_t filter[CSC_FILTER_LEN_MAX + 1];
+  uint32_t *filter;
 } endpoint_t, *p_endpoint_t;
 
 /*
@@ -111,17 +111,20 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   filter_type_t filter_type, const uint32_t * const filter, broadcast_type_t broadcast_type);
 
 /*
-Close an UDP endpoint.
+Free an UDP endpoint.
 
 Arguments:
   endpoint - an endpoint to close.
 */
-static inline void ep_close_udp(const p_endpoint_t endpoint)
+static inline void ep_free_udp(const p_endpoint_t endpoint)
 {
   close(endpoint->fd);
 
   free(endpoint->name);
   endpoint->name = NULL;
+
+  free(endpoint->filter);
+  endpoint->filter = NULL;
 }
 
 /*
@@ -178,11 +181,9 @@ static float inline timespec_passed(const struct timespec * const a, const struc
 // Endpoint collection
 typedef struct
 {
-  // Used endpoints array
-  bool *used_set;
   // Endpoints array
   endpoint_t *endpoints;
-  // Current collection total size (not the number of elements)
+  // Current collection size
   unsigned int size;
 } endpoints_collection_t, *p_endpoints_collection_t;
 
@@ -198,7 +199,7 @@ static inline void ec_init(const p_endpoints_collection_t collection)
   memset(collection, 0, sizeof(endpoints_collection_t));
 }
 
-// Increase endpoints collection size error codes
+// Increase endpoints collection size result codes
 typedef enum
 {
   EIS_OK = 0,
@@ -206,13 +207,12 @@ typedef enum
   EIS_HEAP_ERROR = -2  // Heap allocation/reallocation failed
 } ec_increase_size_result_t;
 
-/* Increase the collection size.
+/* Increase the collection size by 1 memory block.
 
 Arguments:
-  collection - a collection to increase,
-  num - a number of elements to add.
+  collection - a collection to increase.
 */
-int ec_increase_size(p_endpoints_collection_t collection, unsigned int num);
+ec_increase_size_result_t ec_increase_size(const p_endpoints_collection_t collection);
 
 // Open endpoints error codes
 typedef enum
@@ -247,32 +247,6 @@ int ec_open_endpoint(const p_endpoints_collection_t collection, const char * con
   broadcast_type_t broadcast_type);
 
 /*
-Close a UDP endpoint in the collection.
-
-Arguments:
-  collection - an endpoint collection;
-  endpoint_index - an endpoint index.
-*/
-static inline void ec_close_endpoint(const p_endpoints_collection_t collection, const int endpoint_index)
-{
-  ep_close_udp(collection->endpoints + endpoint_index);
-
-  // Mark the memory block as unused
-  collection->used_set[endpoint_index] = false;
-}
-
-/*
-Get a collection length.
-
-Arguments:
-  collection - the collection.
-
-Return:
-  The collection length.
-*/
-int ec_len(const p_endpoints_collection_t collection);
-
-/*
 Stamp all endpoints in the collection.
 
 Arguments:
@@ -285,12 +259,12 @@ Return:
 int ec_stamp_all(const p_endpoints_collection_t collection);
 
 /*
-Close all endpoints in the collection.
+Free all endpoints in the collection.
 
 Arguments:
   collection - the collection.
 */
-void ec_close_all(const p_endpoints_collection_t collection);
+void ec_free_all(const p_endpoints_collection_t collection);
 
 /*
 Find maximal fd for select().
@@ -360,6 +334,12 @@ Return:
 */
 ec_process_result_t ec_select(const p_endpoints_collection_t collection, int const fd_max, const sigset_t * const orig_mask);
 
+/*
+Free the endpoint collection and all the endpoints.
+
+Arguments:
+  collection - the collection to free.
+*/
 void ec_free(const p_endpoints_collection_t collection);
 
 #endif
