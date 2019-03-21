@@ -27,6 +27,14 @@ typedef enum filter_type
 // Terminating MAVLink message ID in filter
 #define CSC_FILTER_TERMINATION  UINT32_MAX
 
+// MAVLink filter type
+typedef enum broadcast_type
+{
+  BT_DISABLED = 0,  // No broadcast
+  BT_NORMAL,  // Normal broadcast
+  BT_DISCOVERY  // GCS discovery broadcast (disables on the first incoming message)
+} broadcast_type_t, *p_broadcast_type_t;
+
 /*
 Get a filter length.
 
@@ -99,7 +107,7 @@ Return:
 */
 int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char * const local_ip, const uint16_t local_port,
   const char * const remote_ip, const uint16_t remote_port, const float sleep_interval, const float sleep_heartbeat_interval,
-  filter_type_t filter_type, const uint32_t * const filter);
+  filter_type_t filter_type, const uint32_t * const filter, broadcast_type_t broadcast_type);
 
 /*
 Close an UDP endpoint.
@@ -212,7 +220,8 @@ Return:
 */
 int ec_open_endpoint(const p_endpoints_collection_t collection, const char * const name, const char * const local_ip,
   const uint16_t local_port, const char * const remote_ip, const uint16_t remote_port, const float sleep_interval,
-  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter);
+  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter,
+  broadcast_type_t broadcast_type);
 
 /*
 Close a UDP endpoint in the collection.

@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/select.h>
 #include <assert.h>
+#include <ifaddrs.h>
 
 #include "endpoint.h"
 
@@ -33,13 +34,14 @@ int filter_id(const uint32_t * const filter, const uint32_t id)
 
 int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char * const local_ip, const uint16_t local_port,
   const char * const remote_ip, const uint16_t remote_port, const float sleep_interval, const float sleep_heartbeat_interval,
-  filter_type_t filter_type, const uint32_t * const filter)
+  filter_type_t filter_type, const uint32_t * const filter, broadcast_type_t broadcast_type)
 {
   syslog(LOG_INFO,
     "Opening MAVLink UDP endpoint: name \"%s\", local %s:%u, remote %s:%u, sleep interval %f, heartbeat interval %f, "
-    "filter %s, filter size %i",
+    "filter %s, filter size %i, broadcast type %u",
     name, (local_ip) ? local_ip : "ANY", local_port, (remote_ip) ? remote_ip : "UNKNOWN", remote_port, sleep_interval,
-    sleep_heartbeat_interval, (filter_type == FT_DROP) ? "DROP" : "ACCEPT", (filter) ? filter_len(filter) : 0);
+    sleep_heartbeat_interval, (filter_type == FT_DROP) ? "DROP" : "ACCEPT", (filter) ? filter_len(filter) : 0,
+    broadcast_type);
 
   // Copy the endpoint name
   strncpy(endpoint->name, name, CSC_ENDPOINT_NAME_MAX + 1);
@@ -62,7 +64,7 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
 
   struct sockaddr_in addr;
 
-  // Setting the local address
+  // Reset the address struct
   memset(&addr, 0, sizeof(addr));
 
   // IP
@@ -82,7 +84,7 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
     }
   }
   else
-    addr.sin_addr.s_addr = INADDR_ANY; // Bind on all interfaces
+    addr.sin_addr.s_addr = INADDR_ANY;  // Bind on all interfaces
 
   // Convert port to the network byte order
   addr.sin_port = htons(local_port);
@@ -144,13 +146,14 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   // Reset a remote address for the endpoint
   memset(&endpoint->remote_address, 0, sizeof(endpoint->remote_address));
 
+  // IP
+  endpoint->remote_address.sin_family = AF_INET;
+
   // A remote address is presented
   if (remote_ip)
   {
-    // IP
-    endpoint->remote_address.sin_family = AF_INET;
     // Convert IP from the string to the IP address
-    if (!inet_aton(remote_ip, &addr.sin_addr))
+    if (!inet_aton(remote_ip, &endpoint->remote_address.sin_addr))
     {
       syslog(LOG_ERR, "Invalid remote IP address: \"%s\"", remote_ip);
 
@@ -162,36 +165,36 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
     // Convert port to the network byte order
     endpoint->remote_address.sin_port = htons(remote_port);
 
-    endpoint->fix_remote = true;
+    // Broadcast endpoint
+    if (broadcast_type != BT_DISABLED)
+    {
+      // Const true value for a SO_BROADCAST option
+      int so_broadcast = true;
+
+      // Enable broadcasting for the socket
+      if (setsockopt(endpoint->fd, SOL_SOCKET, SO_BROADCAST, &so_broadcast, sizeof(so_broadcast)) < 0)
+      {
+        syslog(LOG_ERR, "Failed to set broadcast mode on the socket: \"%s\"", strerror(errno));
+
+        close(endpoint->fd);
+
+        return -1;
+      }
+    }
+
+    // GCS discovery broadcast will switch to normal endpoint on the first incoming message
+    endpoint->fix_remote = broadcast_type != BT_DISCOVERY;
   }
   else
     endpoint->remote_address.sin_addr.s_addr = INADDR_NONE;  // No remote IP address presented
-
-  // Check if the remote address is a multicast address
-  if (IN_MULTICAST(ntohl(endpoint->remote_address.sin_addr.s_addr)))
-  {
-    syslog(LOG_INFO, "Remote address %s is a multicast address", remote_ip);
-
-    // Const true value for a SO_BROADCAST option
-    int so_broadcast = true;
-
-    // Enable broadcasting for the socket
-    if (setsockopt(endpoint->fd, SOL_SOCKET, SO_BROADCAST, &so_broadcast, sizeof(so_broadcast)) < 0)
-    {
-      syslog(LOG_ERR, "Failed to set broadcast mode on the socket: \"%s\"", strerror(errno));
-
-      close(endpoint->fd);
-
-      return -1;
-    }
-  }
 
   return 0;
 }
 
 int ec_open_endpoint(const p_endpoints_collection_t collection, const char * const name, const char * const local_ip,
   const uint16_t local_port, const char * const remote_ip, const uint16_t remote_port, const float sleep_interval,
-  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter)
+  const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter,
+  broadcast_type_t broadcast_type)
 {
   int i;
 
@@ -210,7 +213,7 @@ int ec_open_endpoint(const p_endpoints_collection_t collection, const char * con
   syslog(LOG_DEBUG, "Found free memory block: %i", i);
 
   int index = ep_open_udp(&collection->endpoints[i], name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
-    sleep_heartbeat_interval, filter_type, filter);
+    sleep_heartbeat_interval, filter_type, filter, broadcast_type);
 
   // Error opening a new endpoint
   if (index < 0)

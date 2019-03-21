@@ -130,6 +130,14 @@ static const cyaml_schema_field_t config_remote_address_fields_schema[] =
     CYAML_FIELD_END
 };
 
+// Broadcast type dictionary
+static const cyaml_strval_t broadcast_type_strings[] = 
+{
+	{ "disabled", BT_DISABLED },
+	{ "normal", BT_NORMAL },
+    { "discovery", BT_DISCOVERY }
+};
+
 // Endpoint
 struct config_endpoint
 {
@@ -143,6 +151,8 @@ struct config_endpoint
     struct config_filter *filter;
     // Endpoint sleep settings (optional, sleep disabled by default)
     struct config_endpoint_sleep *sleep;
+    // Endpoint broadcast type (optional, BT_DISABLED by default)
+    enum broadcast_type *broadcast_type;
 };
 
 // Endpoint fields schema
@@ -162,8 +172,11 @@ static const cyaml_schema_field_t config_endpoint_fields_schema[] =
     // Endpoint sleep settings
     CYAML_FIELD_MAPPING_PTR("sleep", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config_endpoint, sleep,
                         config_endpoint_sleep_fields_schema),
+    // Endpoint broadcast type
+    CYAML_FIELD_ENUM_PTR("broadcast", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL | CYAML_FLAG_CASE_INSENSITIVE,
+        struct config_endpoint, broadcast_type, broadcast_type_strings, CYAML_ARRAY_LEN(broadcast_type_strings)),
     CYAML_FIELD_END
-};
+};  
 
 // Endpoint schema to use it as a sequence item
 static const cyaml_schema_value_t config_endpoint_schema =
@@ -270,7 +283,7 @@ static int open_endpoint_from_config(const p_endpoints_collection_t collection, 
         local_ip = NULL;
 
         // The local port override is not set
-        if (local_port >= 0)
+        if (local_port < 0)
             // Use any free port
             local_port = 0;
     }
@@ -352,9 +365,12 @@ static int open_endpoint_from_config(const p_endpoints_collection_t collection, 
         filter[0] = CSC_FILTER_TERMINATION;
     }
 
+    // Extract broadcast type
+    broadcast_type_t broadcast_type = (endpoint->broadcast_type) ? *endpoint->broadcast_type : BT_DISABLED;
+
     // Open a new endpoint
     return ec_open_endpoint(collection, name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
-        heartbeat_interval, filter_type, filter);
+        heartbeat_interval, filter_type, filter, broadcast_type);
 }
 
 // libcyaml configuration

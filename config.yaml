@@ -1,30 +1,20 @@
 endpoints:
   - name: "charging-station"
     local:
-      ip: "0.0.0.0"
       port: 14588
     sleep:
       interval: 5
       heartbeat-interval: 2
   - name: "uav"
     local:
-      ip: "0.0.0.0"
       port: 14589
-  - name: "broadcast"
-    local:
-      ip: "0.0.0.0"
-    remote:
-      ip: "192.168.0.255"
-      port: 14590
   - name: "clients"
     local:
-      ip: "0.0.0.0"
       ports:
         start: 14591
         end: 14595
   - name: "clients-filtered"
     local:
-      ip: "0.0.0.0"
       ports:
         start: 14596
         end: 14597
@@ -33,3 +23,11 @@ endpoints:
       messages:
         - "SYS_STATUS"
         - "GPS_RAW_INT"
+  - name: "broadcast"
+    remote:
+      ip: "192.168.0.255"
+      port: 14600
+    broadcast: "discovery"
+    sleep:
+      interval: 5
+      heartbeat-interval: 1
