@@ -6,6 +6,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <stdlib.h>
 
 #include "mavlink_dialect.h"
 
@@ -60,7 +61,7 @@ int filter_id(const uint32_t * const filter, const uint32_t id);
 // MAVLink endpoint
 typedef struct
 {
-  char name[CSC_ENDPOINT_NAME_MAX + 1];
+  char *name;
   // Endpoint sleep interval (-1 - no sleep mode)
   float sleep_interval;
   // Heartbeat minimal interval (-1 - no minimal interval)
@@ -118,6 +119,9 @@ Arguments:
 static inline void ep_close_udp(const p_endpoint_t endpoint)
 {
   close(endpoint->fd);
+
+  free(endpoint->name);
+  endpoint->name = NULL;
 }
 
 /*
@@ -175,9 +179,11 @@ static float inline timespec_passed(const struct timespec * const a, const struc
 typedef struct
 {
   // Used endpoints array
-  bool used_set[MAVLINK_COMM_NUM_BUFFERS];
+  bool *used_set;
   // Endpoints array
-  endpoint_t endpoints[MAVLINK_COMM_NUM_BUFFERS];
+  endpoint_t *endpoints;
+  // Current collection total size (not the number of elements)
+  unsigned int size;
 } endpoints_collection_t, *p_endpoints_collection_t;
 
 /*
@@ -192,11 +198,28 @@ static inline void ec_init(const p_endpoints_collection_t collection)
   memset(collection, 0, sizeof(endpoints_collection_t));
 }
 
+// Increase endpoints collection size error codes
+typedef enum
+{
+  EIS_OK = 0,
+  EIS_LIMIT = -1,  // No more MAVLink channels in C MAVLink
+  EIS_HEAP_ERROR = -2  // Heap allocation/reallocation failed
+} ec_increase_size_result_t;
+
+/* Increase the collection size.
+
+Arguments:
+  collection - a collection to increase,
+  num - a number of elements to add.
+*/
+int ec_increase_size(p_endpoints_collection_t collection, unsigned int num);
+
 // Open endpoints error codes
 typedef enum
 {
   ECCE_FULL = -1,  // No free MAVLink channels
-  ECCE_OPEN_FAILED = -2  // Failed to open a socket
+  ECCE_OPEN_FAILED = -2,  // Failed to open a socket
+  ECCE_RESIZE_ERROR = -3  // Failed to resize endpoints collection
 } ec_open_endpoint_error_t;
 
 /*
@@ -232,7 +255,7 @@ Arguments:
 */
 static inline void ec_close_endpoint(const p_endpoints_collection_t collection, const int endpoint_index)
 {
-  ep_close_udp(&collection->endpoints[endpoint_index]);
+  ep_close_udp(collection->endpoints + endpoint_index);
 
   // Mark the memory block as unused
   collection->used_set[endpoint_index] = false;
@@ -336,5 +359,7 @@ Return:
   < 0 - error (doesn't set errno) (ec_process_result_t).
 */
 ec_process_result_t ec_select(const p_endpoints_collection_t collection, int const fd_max, const sigset_t * const orig_mask);
+
+void ec_free(const p_endpoints_collection_t collection);
 
 #endif

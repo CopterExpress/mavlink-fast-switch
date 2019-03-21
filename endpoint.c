@@ -43,14 +43,22 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
     sleep_heartbeat_interval, (filter_type == FT_DROP) ? "DROP" : "ACCEPT", (filter) ? filter_len(filter) : 0,
     broadcast_type);
 
-  // Copy the endpoint name
-  strncpy(endpoint->name, name, CSC_ENDPOINT_NAME_MAX + 1);
-  if (endpoint->name[CSC_ENDPOINT_NAME_MAX] != '\0')
+  // Reset the endpoint struct
+  memset(endpoint, 0, sizeof(endpoint_t));
+
+  // Allocate memory for an endpoit name
+  endpoint->name = (char *)malloc(strlen(name) + 1);
+
+  // Check if the memory was allocated
+  if (!endpoint->name)
   {
-    syslog(LOG_ERR, "Endpoint name is too long");
+    syslog(LOG_ERR, "Failed to allocate memory for an endpoint name: \"%s\"", strerror(errno));
 
     return -1;
   }
+
+  // Copy the endpoint name
+  strcpy(endpoint->name, name);
 
   // Create an UDP socket
   endpoint->fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -191,6 +199,45 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   return 0;
 }
 
+int ec_increase_size(p_endpoints_collection_t collection, unsigned int num)
+{
+  syslog(LOG_DEBUG, "Collection size increase requested by %u elements", num);
+
+  if (!num)
+    return EIS_OK;
+
+  if (collection->size + num > MAVLINK_COMM_NUM_BUFFERS)
+  {
+    syslog(LOG_ERR, "No more MAVLink channels avalible");
+
+    return EIS_LIMIT;
+  }
+
+
+  collection->used_set = (bool *)realloc(collection->used_set, (collection->size + num) * sizeof(bool));
+
+  if (!collection->used_set)
+  {
+    syslog(LOG_ERR, "Failed to reallocate memory for usage set in the collection: \"%s\"", strerror(errno));
+
+    return EIS_HEAP_ERROR;
+  }
+  
+
+  collection->endpoints = (p_endpoint_t)realloc(collection->endpoints, (collection->size + num) * sizeof(endpoint_t));
+
+  if (!collection->endpoints)
+  {
+    syslog(LOG_ERR, "Failed to reallocate memory for endpoints in the collection: \"%s\"", strerror(errno));
+
+    return EIS_HEAP_ERROR;
+  }
+
+  collection->size += num;
+
+  return EIS_OK;
+}
+
 int ec_open_endpoint(const p_endpoints_collection_t collection, const char * const name, const char * const local_ip,
   const uint16_t local_port, const char * const remote_ip, const uint16_t remote_port, const float sleep_interval,
   const float sleep_heartbeat_interval, const filter_type_t filter_type, const uint32_t * const filter,
@@ -199,20 +246,28 @@ int ec_open_endpoint(const p_endpoints_collection_t collection, const char * con
   int i;
 
   // Look for the first empty memory block
-  for (i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (i = 0; i < collection->size; i++)
     if (!collection->used_set[i])
       break;
 
-  if (i == MAVLINK_COMM_NUM_BUFFERS)
+  if (i == collection->size)
   {
-    syslog(LOG_ERR, "No free memory blocks in the endpoints collection!");
+    switch (ec_increase_size(collection, 1))
+    {
+    case EIS_LIMIT:
+      return ECCE_FULL;
+    case EIS_HEAP_ERROR:
+      return ECCE_RESIZE_ERROR;
+    default:
+      break;
+    }
 
-    return ECCE_FULL;
+    i = collection->size - 1;
   }
 
   syslog(LOG_DEBUG, "Found free memory block: %i", i);
 
-  int index = ep_open_udp(&collection->endpoints[i], name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
+  int index = ep_open_udp(collection->endpoints + i, name, local_ip, local_port, remote_ip, remote_port, sleep_interval,
     sleep_heartbeat_interval, filter_type, filter, broadcast_type);
 
   // Error opening a new endpoint
@@ -230,7 +285,7 @@ int ec_len(const p_endpoints_collection_t collection)
   int len = 0;
 
   // Count all used memory blocks
-  for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (int i = 0; i < collection->size; i++)
     if (collection->used_set[i])
       len++;
 
@@ -242,7 +297,7 @@ int ec_stamp_all(const p_endpoints_collection_t collection)
   int i;
 
   // Stamp monotonic clock value for endpoints in the used memory blocks
-  for (i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (i = 0; i < collection->size; i++)
     if (collection->used_set[i])
     {
       if (ep_stamp(&collection->endpoints[i]) < 0)
@@ -257,7 +312,7 @@ void ec_close_all(const p_endpoints_collection_t collection)
   int i;
 
   // Close endpoints in the used memory blocks
-  for (i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (i = 0; i < collection->size; i++)
     if (collection->used_set[i])
       ec_close_endpoint(collection, i);
 }
@@ -267,7 +322,7 @@ int ec_fd_max(const p_endpoints_collection_t collection)
   int fd = -1;
 
   // Find file descriptor with the max number in the used memory blocks
-  for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (int i = 0; i < collection->size; i++)
     if (collection->used_set[i] && (fd < collection->endpoints[i].fd))
       fd = collection->endpoints[i].fd;
 
@@ -282,7 +337,7 @@ void ec_get_fds(const p_endpoints_collection_t collection, fd_set * const read_f
   FD_ZERO(read_fds);
 
   // Build select file descriptors set from the file descriptors in the used memory blocks
-  for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (int i = 0; i < collection->size; i++)
     if (collection->used_set[i])
       FD_SET(collection->endpoints[i].fd, read_fds);
 }
@@ -305,7 +360,7 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
     return ECSR_INV_LEN;
   }
 
-  for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
+  for (int i = 0; i < collection->size; i++)
   {
     // For every endpoint in the used memory block that is not a sender and has the remote address
     if (collection->used_set[i] && (i != sender_index)
@@ -431,7 +486,7 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
   }
 
   // For every memory block in the collection
-  for (endpoint_index = 0; endpoint_index < MAVLINK_COMM_NUM_BUFFERS; endpoint_index++)
+  for (endpoint_index = 0; endpoint_index < collection->size; endpoint_index++)
   {
     // If the memory block is used check if it is the source of the data
     if (collection->used_set[endpoint_index] && FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
@@ -483,4 +538,15 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
   }
 
   return ECEC_OK;
+}
+
+void ec_free(const p_endpoints_collection_t collection)
+{
+  ec_close_all(collection);
+
+  free(collection->endpoints);
+  collection->endpoints = NULL;
+
+  free(collection->used_set);
+  collection->used_set = NULL;
 }

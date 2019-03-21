@@ -366,7 +366,7 @@ static int open_endpoint_from_config(const p_endpoints_collection_t collection, 
     }
 
     // Extract broadcast type
-    broadcast_type_t broadcast_type = (endpoint->broadcast_type) ? *endpoint->broadcast_type : BT_DISABLED;
+    enum broadcast_type broadcast_type = (endpoint->broadcast_type) ? *endpoint->broadcast_type : BT_DISABLED;
 
     // Open a new endpoint
     return ec_open_endpoint(collection, name, local_ip, local_port, remote_ip, remote_port, sleep_interval,

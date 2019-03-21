@@ -149,7 +149,7 @@ int main(int argc, char **argv)
   {
     syslog(LOG_ERR, "Error setting new signal mask: \"%s\"", strerror(errno));
 
-    ec_close_all(&collection);
+    ec_free(&collection);
     closelog ();
 
     return EX_OSERR;
@@ -169,7 +169,7 @@ int main(int argc, char **argv)
 
   syslog(LOG_DEBUG, "Stopping application...");
 
-  ec_close_all(&collection);
+  ec_free(&collection);
   closelog();
 
   return EX_OK;
