@@ -6,6 +6,7 @@
 #include <time.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <limits.h>
 
 #include "mavlink_dialect.h"
 
@@ -171,6 +172,8 @@ static float inline timespec_passed(const struct timespec * const a, const struc
   return timespec2float(a) - timespec2float(b);
 }
 
+#define EC_IT_NOT_SET 0xFF
+
 // Endpoint collection
 typedef struct
 {
@@ -178,6 +181,10 @@ typedef struct
   bool used_set[MAVLINK_COMM_NUM_BUFFERS];
   // Endpoints array
   endpoint_t endpoints[MAVLINK_COMM_NUM_BUFFERS];
+  // MAVLink ID table
+  uint8_t id_table[UCHAR_MAX];
+  // MAVLink ID table enabled flag
+  bool id_table_enabled;
 } endpoints_collection_t, *p_endpoints_collection_t;
 
 /*
@@ -188,8 +195,12 @@ Arguments:
 */
 static inline void ec_init(const p_endpoints_collection_t collection)
 {
-  // Reset endpoints collection buffer
-  memset(collection, 0, sizeof(endpoints_collection_t));
+  // Reset endpoints collection used endpoints set
+  memset(collection->used_set, 0, sizeof(collection->used_set));
+  // Reset endpoints collection edpoints array
+  memset(collection->endpoints, 0, sizeof(collection->endpoints));
+  // Reset endpoints collection ID table
+  memset(collection->id_table, EC_IT_NOT_SET, sizeof(collection->id_table));
 }
 
 // Open endpoints error codes

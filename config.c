@@ -191,6 +191,8 @@ struct config
     struct config_endpoint *endpoints;
     // Endpoints array size
     unsigned endpoints_count;
+    // MAVLink ID table enabled flag
+    bool *id_table;
 };
 
 // Configuration fields schema
@@ -199,6 +201,8 @@ static const cyaml_schema_field_t config_fields_schema[] =
     // Endpoints >= 1, <= MAVLINK_COMM_NUM_BUFFERS
     CYAML_FIELD_SEQUENCE("endpoints", CYAML_FLAG_POINTER, struct config, endpoints, &config_endpoint_schema, 1,
         MAVLINK_COMM_NUM_BUFFERS),
+    // MAVLink ID table enabled optional flag
+    CYAML_FIELD_BOOL_PTR("id-table", CYAML_FLAG_POINTER | CYAML_FLAG_OPTIONAL, struct config, id_table),
     CYAML_FIELD_END
 };
 
@@ -397,6 +401,11 @@ int config_load(const p_endpoints_collection_t collection, const char *config_fi
 
         return -1;
     }
+
+    // Extract the MAVLink ID table enabled flag
+    collection->id_table_enabled = (app_config->id_table) ? *app_config->id_table : false;
+
+    syslog(LOG_DEBUG, "MAVLink ID table: %s", (collection->id_table_enabled) ? "ENABLED" : "DISABLED");
 
     syslog(LOG_DEBUG, "Endpoints in configuration: %u", app_config->endpoints_count);
 

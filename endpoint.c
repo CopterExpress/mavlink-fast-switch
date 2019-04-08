@@ -305,6 +305,42 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
     return ECSR_INV_LEN;
   }
 
+  // If the MAVLink ID table enabled
+  if (collection->id_table_enabled)
+  {
+    static const mavlink_msg_entry_t *message_entry;
+
+    // Retrieve the message description by ID
+    message_entry = mavlink_get_msg_entry(message->msgid);
+
+    // If massage description found and the message has a target system ID
+    if (message_entry && (message_entry->flags && MAV_MSG_ENTRY_FLAG_HAVE_TARGET_SYSTEM))
+    {
+      static uint8_t endpoint_id;
+
+      // Extract the target system ID from the payload and get an endpoint ID from the MAVLink ID table
+      endpoint_id = collection->id_table[*(uint8_t *)(message->payload64 + message_entry->target_system_ofs)];
+
+      // Endpoint is not set
+      // HINT: 0 (broadcast) MAVLink ID is always EC_IT_NOT_SET
+      if (endpoint_id != EC_IT_NOT_SET)
+      {
+         // Send the data to the target remote endpoint
+        if (sendto(collection->endpoints[endpoint_id].fd, message_buf, message_length, 0,
+          (struct sockaddr *)&collection->endpoints[endpoint_id].remote_address, sizeof(struct sockaddr_in)) < 0)
+        {
+          syslog(LOG_ERR, "Failed to send data to the target endpoint %s: \"%s\"\n", collection->endpoints[endpoint_id].name,
+            strerror(errno));
+
+          return ECSR_SEND_FAILED;
+        }
+
+        // No need to send data to other endpoints
+        return ECSR_OK;
+      }
+    }
+  }
+
   for (int i = 0; i < MAVLINK_COMM_NUM_BUFFERS; i++)
   {
     // For every endpoint in the used memory block that is not a sender and has the remote address
@@ -463,6 +499,24 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
             syslog(LOG_INFO, "Endpoint \"%s\" is now awake", collection->endpoints[endpoint_index].name);
             
             collection->endpoints[endpoint_index].sleep_mode = false;
+          }
+
+          // MAVLink ID table enabled (broadcast ID check added in case the MAVLink message is malformed)
+          if (collection->id_table_enabled && message.sysid)
+          {
+            // Source MAVLink ID endpoint is unknown
+            if (collection->id_table[message.sysid] == EC_IT_NOT_SET)
+            {
+              // Learn the source MAVLink endpoint
+              collection->id_table[message.sysid] = endpoint_index;
+
+              syslog(LOG_INFO, "MAVLink ID %u found in the endpoint \"%s\"", message.sysid,
+                collection->endpoints[endpoint_index].name);
+            }
+            // Duplicate MAVLink ID detected in the other endpoint
+            else if (collection->id_table[message.sysid] != endpoint_index)
+              syslog(LOG_ERR, "Duplicate MAVLink ID %u detected in the endpoint \"%s\" (origionally from \"%s\")", message.sysid,
+                collection->endpoints[endpoint_index].name, collection->endpoints[collection->id_table[message.sysid]].name);
           }
 
           // Send the data to every endpoint except the sender
