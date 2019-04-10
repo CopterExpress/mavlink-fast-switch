@@ -291,11 +291,8 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
 {
   // Send buffer (to store parsed MAVLink message)
   static uint8_t message_buf[MAVLINK_MAX_PACKET_LEN];
-  // MAVLink message length
-  static unsigned int message_length;
-
   // Convert message to the binary format
-  message_length = mavlink_msg_to_send_buffer(message_buf, message);
+  unsigned int message_length = mavlink_msg_to_send_buffer(message_buf, message);
 
   // Check if the binary message size is correct
   if (message_length > MAVLINK_MAX_PACKET_LEN)
@@ -308,18 +305,14 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
   // If the MAVLink ID table enabled
   if (collection->id_table_enabled)
   {
-    static const mavlink_msg_entry_t *message_entry;
-
     // Retrieve the message description by ID
-    message_entry = mavlink_get_msg_entry(message->msgid);
+    const mavlink_msg_entry_t *message_entry = mavlink_get_msg_entry(message->msgid);
 
     // If massage description found and the message has a target system ID
     if (message_entry && (message_entry->flags && MAV_MSG_ENTRY_FLAG_HAVE_TARGET_SYSTEM))
     {
-      static uint8_t endpoint_id;
-
       // Extract the target system ID from the payload and get an endpoint ID from the MAVLink ID table
-      endpoint_id = collection->id_table[*(uint8_t *)(message->payload64 + message_entry->target_system_ofs)];
+      uint8_t endpoint_id = collection->id_table[*(uint8_t *)(message->payload64 + message_entry->target_system_ofs)];
 
       // Endpoint is not set
       // HINT: 0 (broadcast) MAVLink ID is always EC_IT_NOT_SET
@@ -352,7 +345,7 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
     if (collection->used_set[i] && (i != sender_index)
       && (collection->endpoints[i].remote_address.sin_addr.s_addr != INADDR_NONE))
     {
-      static struct timespec current_time;
+      struct timespec current_time;
 
       if (clock_gettime(CLOCK_MONOTONIC, &current_time) < 0)
       {
@@ -406,10 +399,8 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
         collection->endpoints[i].first_heartbeat = false;
       }
 
-      static int msgid_index;
-
       // Find a message ID in the filter
-      msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
+      int msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
 
       // If it is an ACCEPT filter and the message is not found, if it is a DROP filter and the message is found
       if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
@@ -433,34 +424,17 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
 
 int ec_select(const p_endpoints_collection_t collection, const int fd_max, const sigset_t * const orig_mask)
 {
-  // select fds number
-  static int select_fds_num;
-
-  static int endpoint_index;
-  static int i;
-
-  static socklen_t addr_len;
-
-  static int send_all_result;
-
   // Read fd set for select
   static fd_set read_fds;
 
   // Data read buffer
   static uint8_t read_buf[READ_BUF_SIZE];
-  // Read data counter
-  static ssize_t data_read;
-
-  // MAVLink message buffer
-  static mavlink_message_t message;
-  // MAVLink message parsing status
-  static mavlink_status_t status;
 
   // Get FD set mask for the collection
   ec_get_fds(collection, &read_fds);
 
   // Wait for data at any fd and process SIGINT and SIGTERM
-  select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, orig_mask);
+  int select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, orig_mask);
 
   // select returned an error
   if (select_fds_num < 0)
@@ -471,8 +445,20 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
     return ECEC_SELECT_FAILED;
   }
 
+  // Read data counter
+  ssize_t data_read;
+
+  socklen_t addr_len;
+  
+  int send_all_result;
+
+  // MAVLink message buffer
+  static mavlink_message_t message;
+  // MAVLink message parsing status
+  mavlink_status_t status;
+
   // For every memory block in the collection
-  for (endpoint_index = 0; endpoint_index < MAVLINK_COMM_NUM_BUFFERS; endpoint_index++)
+  for (int endpoint_index = 0; endpoint_index < MAVLINK_COMM_NUM_BUFFERS; endpoint_index++)
   {
     // If the memory block is used check if it is the source of the data
     if (collection->used_set[endpoint_index] && FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
@@ -494,7 +480,7 @@ int ec_select(const p_endpoints_collection_t collection, const int fd_max, const
       }
 
       // For every byte in the new data
-      for (i = 0; i < data_read; i++)
+      for (int i = 0; i < data_read; i++)
       {
         // Parse using MAVLink
         if (mavlink_parse_char(endpoint_index, read_buf[i], &message, &status))
