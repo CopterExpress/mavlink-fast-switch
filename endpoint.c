@@ -325,7 +325,12 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
       // HINT: 0 (broadcast) MAVLink ID is always EC_IT_NOT_SET
       if (endpoint_id != EC_IT_NOT_SET)
       {
-         // Send the data to the target remote endpoint
+        // Target MAVLink ID is in the sender endpoint
+        if (endpoint_id == sender_index)
+          // Ignore the message
+          return ECSR_OK;
+        
+        // Send the data to the target remote endpoint
         if (sendto(collection->endpoints[endpoint_id].fd, message_buf, message_length, 0,
           (struct sockaddr *)&collection->endpoints[endpoint_id].remote_address, sizeof(struct sockaddr_in)) < 0)
         {
