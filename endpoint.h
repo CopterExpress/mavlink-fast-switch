@@ -178,6 +178,8 @@ static float inline timespec_passed(const struct timespec * const a, const struc
   return timespec2float(a) - timespec2float(b);
 }
 
+#define EC_IT_NOT_SET 0xFF
+
 // Endpoint collection
 typedef struct
 {
@@ -185,6 +187,8 @@ typedef struct
   endpoint_t *endpoints;
   // Current collection size
   unsigned int size;
+  // MAVLink ID table
+  uint8_t *id_table;
 } endpoints_collection_t, *p_endpoints_collection_t;
 
 /*
@@ -192,12 +196,29 @@ Init endpoints collection.
 
 Arguments:
   collection - a collection to init.
+
+Return:
+    0 - on success,
+    -1 - on error (doesn't set errno).
 */
 static inline void ec_init(const p_endpoints_collection_t collection)
 {
   // Reset endpoints collection buffer
   memset(collection, 0, sizeof(endpoints_collection_t));
 }
+
+/*
+Enable/disable MAVLink ID table for the collection.
+
+Arguments:
+  collection - a target collection,
+  id_table_enabled - MAVLink ID table enabled flag.
+
+Return:
+    0 - on success,
+    -1 - failed to allocate MAVLink ID table (doesn't set errno).
+*/
+int ec_id_table_control(const p_endpoints_collection_t collection, const bool id_table_enabled);
 
 // Increase endpoints collection size result codes
 typedef enum

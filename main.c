@@ -33,7 +33,7 @@ void signal_handler(int signum)
 
 int main(int argc, char **argv)
 {
-  printf("COEX MAVLink fast switch v0.1\n");
+  printf("COEX MAVLink fast switch v%i.%i [dialect: %s]\n", VERSION_MAJOR, VERSION_MINOR, MAVLINK_DIALECT);
 
   // Signal action structure
   struct sigaction act;

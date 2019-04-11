@@ -17,7 +17,7 @@
 Load the user configuration
 
 Arguments:
-    collection - an endpoint collection,
+    collection - an initialised endpoint collection,
     config_file_path - a configuration file name.
 */
 int config_load(const p_endpoints_collection_t collection, const char *config_file_path);

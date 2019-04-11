@@ -6,6 +6,7 @@
 #include <sys/select.h>
 #include <assert.h>
 #include <ifaddrs.h>
+#include <limits.h>
 
 #include "endpoint.h"
 
@@ -221,6 +222,34 @@ int ep_open_udp(const p_endpoint_t endpoint, const char * const name, const char
   return 0;
 }
 
+int ec_id_table_control(const p_endpoints_collection_t collection, const bool id_table_enabled)
+{
+  // MAVLink ID table enable request and MAVLink ID table is not enabled yet
+  if (id_table_enabled && !collection->id_table)
+  {
+    // Allocate memory for the MAVLink ID tabke
+    collection->id_table = (uint8_t *)malloc(sizeof(uint8_t) * UCHAR_MAX);
+
+    if (!collection->id_table)
+    {
+      syslog(LOG_ERR, "Failed to allocate memory for MAVLink ID table in the collection: \"%s\"", strerror(errno));
+
+      return -1;
+    }
+
+    // Reset endpoints collection ID table content
+    memset(collection->id_table, EC_IT_NOT_SET, sizeof(uint8_t) * UCHAR_MAX);
+  }
+  // MAVLink ID table disable request and MAVLink ID table is enabled
+  else if (!id_table_enabled && collection->id_table)
+  {
+    free(collection->id_table);
+    collection->id_table = NULL;
+  }
+
+  return 0;
+}
+
 ec_increase_size_result_t ec_increase_size(const p_endpoints_collection_t collection)
 {
   syslog(LOG_DEBUG, "Collection size increase requested");
@@ -338,11 +367,8 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
 {
   // Send buffer (to store parsed MAVLink message)
   static uint8_t message_buf[MAVLINK_MAX_PACKET_LEN];
-  // MAVLink message length
-  static unsigned int message_length;
-
   // Convert message to the binary format
-  message_length = mavlink_msg_to_send_buffer(message_buf, message);
+  unsigned int message_length = mavlink_msg_to_send_buffer(message_buf, message);
 
   // Check if the binary message size is correct
   if (message_length > MAVLINK_MAX_PACKET_LEN)
@@ -352,12 +378,49 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
     return ECSR_INV_LEN;
   }
 
+  // If the MAVLink ID table enabled
+  if (collection->id_table)
+  {
+    // Retrieve the message description by ID
+    const mavlink_msg_entry_t *message_entry = mavlink_get_msg_entry(message->msgid);
+
+    // If massage description found and the message has a target system ID
+    if (message_entry && (message_entry->flags && MAV_MSG_ENTRY_FLAG_HAVE_TARGET_SYSTEM))
+    {
+      // Extract the target system ID from the payload and get an endpoint ID from the MAVLink ID table
+      uint8_t endpoint_id = collection->id_table[*(uint8_t *)(message->payload64 + message_entry->target_system_ofs)];
+
+      // Endpoint is not set
+      // HINT: 0 (broadcast) MAVLink ID is always EC_IT_NOT_SET
+      if (endpoint_id != EC_IT_NOT_SET)
+      {
+        // Target MAVLink ID is in the sender endpoint
+        if (endpoint_id == sender_index)
+          // Ignore the message
+          return ECSR_OK;
+        
+        // Send the data to the target remote endpoint
+        if (sendto(collection->endpoints[endpoint_id].fd, message_buf, message_length, 0,
+          (struct sockaddr *)&collection->endpoints[endpoint_id].remote_address, sizeof(struct sockaddr_in)) < 0)
+        {
+          syslog(LOG_ERR, "Failed to send data to the target endpoint %s: \"%s\"\n", collection->endpoints[endpoint_id].name,
+            strerror(errno));
+
+          return ECSR_SEND_FAILED;
+        }
+
+        // No need to send data to other endpoints
+        return ECSR_OK;
+      }
+    }
+  }
+
   for (int i = 0; i < collection->size; i++)
   {
     // For every endpoint in the used memory block that is not a sender and has the remote address
     if ((i != sender_index) && (collection->endpoints[i].remote_address.sin_addr.s_addr != INADDR_NONE))
     {
-      static struct timespec current_time;
+      struct timespec current_time;
 
       if (clock_gettime(CLOCK_MONOTONIC, &current_time) < 0)
       {
@@ -411,13 +474,11 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
         collection->endpoints[i].first_heartbeat = false;
       }
 
-      static int msgid_index;
-
       // If filter is set for the endpoint
       if (collection->endpoints[i].filter)
       {
         // Find a message ID in the filter
-        msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
+        int msgid_index = filter_id(collection->endpoints[i].filter, message->msgid);
 
         // If it is an ACCEPT filter and the message is not found, if it is a DROP filter and the message is found
         if (((collection->endpoints[i].filter_type == FT_ACCEPT) && (msgid_index < 0)) ||
@@ -442,34 +503,17 @@ int ec_sendto(const p_endpoints_collection_t collection, const int sender_index,
 
 ec_process_result_t ec_select(const p_endpoints_collection_t collection, const int fd_max, const sigset_t * const orig_mask)
 {
-  // select fds number
-  static int select_fds_num;
-
-  static int endpoint_index;
-  static int i;
-
-  static socklen_t addr_len;
-
-  static int send_all_result;
-
   // Read fd set for select
   static fd_set read_fds;
 
   // Data read buffer
   static uint8_t read_buf[READ_BUF_SIZE];
-  // Read data counter
-  static ssize_t data_read;
-
-  // MAVLink message buffer
-  static mavlink_message_t message;
-  // MAVLink message parsing status
-  static mavlink_status_t status;
 
   // Get FD set mask for the collection
   ec_get_fds(collection, &read_fds);
 
   // Wait for data at any fd and process SIGINT and SIGTERM
-  select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, orig_mask);
+  int select_fds_num = pselect(fd_max + 1, &read_fds, NULL, NULL, NULL, orig_mask);
 
   // select returned an error
   if (select_fds_num < 0)
@@ -480,8 +524,20 @@ ec_process_result_t ec_select(const p_endpoints_collection_t collection, const i
     return ECEC_SELECT_FAILED;
   }
 
+  // Read data counter
+  ssize_t data_read;
+
+  socklen_t addr_len;
+  
+  int send_all_result;
+
+  // MAVLink message buffer
+  static mavlink_message_t message;
+  // MAVLink message parsing status
+  mavlink_status_t status;
+
   // For every memory block in the collection
-  for (endpoint_index = 0; endpoint_index < collection->size; endpoint_index++)
+  for (int endpoint_index = 0; endpoint_index < collection->size; endpoint_index++)
   {
     // If the endpoint is the source of the data
     if (FD_ISSET(collection->endpoints[endpoint_index].fd, &read_fds))
@@ -504,7 +560,7 @@ ec_process_result_t ec_select(const p_endpoints_collection_t collection, const i
       }
 
       // For every byte in the new data
-      for (i = 0; i < data_read; i++)
+      for (int i = 0; i < data_read; i++)
       {
         // Parse using MAVLink
         if (mavlink_parse_char(endpoint_index, read_buf[i], &message, &status))
@@ -514,6 +570,24 @@ ec_process_result_t ec_select(const p_endpoints_collection_t collection, const i
             syslog(LOG_INFO, "Endpoint \"%s\" is now awake", collection->endpoints[endpoint_index].name);
             
             collection->endpoints[endpoint_index].sleep_mode = false;
+          }
+
+          // MAVLink ID table enabled (broadcast ID check added in case the MAVLink message is malformed)
+          if (collection->id_table && message.sysid)
+          {
+            // Source MAVLink ID endpoint is unknown
+            if (collection->id_table[message.sysid] == EC_IT_NOT_SET)
+            {
+              // Learn the source MAVLink endpoint
+              collection->id_table[message.sysid] = endpoint_index;
+
+              syslog(LOG_INFO, "MAVLink ID %u found in the endpoint \"%s\"", message.sysid,
+                collection->endpoints[endpoint_index].name);
+            }
+            // Duplicate MAVLink ID detected in the other endpoint
+            else if (collection->id_table[message.sysid] != endpoint_index)
+              syslog(LOG_ERR, "Duplicate MAVLink ID %u detected in the endpoint \"%s\" (origionally from \"%s\")", message.sysid,
+                collection->endpoints[endpoint_index].name, collection->endpoints[collection->id_table[message.sysid]].name);
           }
 
           // Send the data to every endpoint except the sender
@@ -538,6 +612,10 @@ ec_process_result_t ec_select(const p_endpoints_collection_t collection, const i
 
 void ec_free(const p_endpoints_collection_t collection)
 {
+  // Free the collection MAVLink ID table
+  // HINT: MAVLink ID table disable command will do that
+  ec_id_table_control(collection, false);
+
   // Free all the endpoints
   ec_free_all(collection);
 

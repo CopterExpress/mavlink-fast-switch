@@ -4,6 +4,11 @@ set(CMAKE_C_FLAGS "-std=gnu11")
 
 project(mavlink-fast-switch C)
 
+set(VERSION_MAJOR 0)
+set(VERSION_MINOR 1)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DVERSION_MAJOR=${VERSION_MAJOR} -DVERSION_MINOR=${VERSION_MINOR}")
+
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(YAML REQUIRED libcyaml)
@@ -31,9 +36,19 @@ if(NOT EXISTS "${PROJECT_SOURCE_DIR}/libs/mavlink/v2.0")
     message(FATAL_ERROR "The submodules were not downloaded! GIT_SUBMODULE was turned off or failed. Please update submodules and try again.")
 endif()
 
+if(NOT DEFINED MAVLINK_DIALECT)
+    set(MAVLINK_DIALECT "ardupilotmega")
+    message(WARNING "MAVLink dialect is not set. Using ardupilotmega by default!")
+endif()
+
+configure_file(
+  "${PROJECT_SOURCE_DIR}/mavlink_dialect.h.in"
+  "${PROJECT_BINARY_DIR}/mavlink_dialect.h"
+)
+
 add_executable(mavlink-fast-switch main.c endpoint.c config.c)
 
-target_include_directories(mavlink-fast-switch PUBLIC ${YAML_INCLUDE_DIRS})
+target_include_directories(mavlink-fast-switch PUBLIC ${YAML_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
 
 target_link_libraries(mavlink-fast-switch ${YAML_LIBRARIES})
 

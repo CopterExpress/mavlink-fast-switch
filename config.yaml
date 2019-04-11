@@ -50,3 +50,5 @@ endpoints:
       interval: 5
       # Send heartbeats not more often than 1 message per 3 seconds
       heartbeat-interval: 3
+# Enable MAVLink ID table
+id-table: True
