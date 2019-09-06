@@ -8,7 +8,7 @@ Documentation=https://github.com/CopterExpress/mavlink-fast-switch
 [Service]
 Type=simple
 WorkingDirectory=/etc/mavlink-fast-switch
-ExecStart=@CMAKE_INSTALL_PREFIX@/bin/mavlink-fast-switch /etc/mavlink-fast-switch/%i.conf 
+ExecStart=@CMAKE_INSTALL_PREFIX@/bin/mavlink-fast-switch /etc/mavlink-fast-switch/%i.yaml 
 RestartSec=2s
 Restart=on-failure
 
