@@ -47,9 +47,14 @@ configure_file(
 )
 
 add_executable(mavlink-fast-switch main.c endpoint.c config.c)
-
 target_include_directories(mavlink-fast-switch PUBLIC ${YAML_INCLUDE_DIRS} ${PROJECT_BINARY_DIR})
-
 target_link_libraries(mavlink-fast-switch ${YAML_LIBRARIES})
 
+configure_file("${PROJECT_SOURCE_DIR}/mavlink-fast-switch@.service.cmake"
+    "${PROJECT_BINARY_DIR}/mavlink-fast-switch@.service")
 
+install(TARGETS mavlink-fast-switch DESTINATION bin)
+install(FILES "${PROJECT_BINARY_DIR}/mavlink-fast-switch@.service" DESTINATION 
+    "/lib/systemd/system")
+install(FILES "${PROJECT_SOURCE_DIR}/config.yaml" DESTINATION 
+    "/etc/mavlink-fast-switch/" RENAME "example.yaml")
